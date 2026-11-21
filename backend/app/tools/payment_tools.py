@@ -62,6 +62,29 @@ async def initiate_payee_eudi_verification(
         currency="EUR",
     )
 
+    settings = get_settings()
+    if (
+        settings.ADAPTER_MODE.upper() == "MOCK"
+        and settings.MOCK_WALLET_AUTO_PRESENT
+        and settings.ALLOW_MOCK_VERIFICATION
+    ):
+        try:
+            mock_result = await verifier.apply_preset_scenario(session_id, "valid")
+            tool_context.state["verification_status"] = mock_result.status.value
+            if mock_result.status == VerificationStatus.VERIFIED:
+                tool_context.state["verified_payee"] = {
+                    "name": mock_result.verified_name,
+                    "iban": mock_result.verified_iban,
+                    "bank": mock_result.issuer_bank,
+                }
+                wallet_mode = " | Presentare EUDI mock verificată automat"
+            else:
+                wallet_mode = f" | Mock wallet verdict: {mock_result.status.value}"
+        except Exception:
+            wallet_mode = " | Mock wallet presentation unavailable"
+    else:
+        wallet_mode = ""
+
     return (
         "Am înregistrat intenția de plată. În calitate de **Agent de Autorizare ING**, "
         "am activat protocolul Zero-Trust prin EUDI Wallet pentru a preveni impersonarea, "
@@ -71,8 +94,10 @@ async def initiate_payee_eudi_verification(
         "Această solicitare cere prezentarea PID eIDAS și a atestării bancare de proprietate asupra IBAN.\n\n"
         f"- **Verification Request ID:** `{dcql_req.request_id}`\n"
         f"- **Session ID:** `{session_id}`\n"
-        "- **Verdict provizoriu:** PENDING — autorizarea nu este încă confirmată\n"
-        f"- **OID4VP Deep Link:** {dcql_req.qr_code_uri}\n\n"
+        f"- **Verdict EUDI:** {tool_context.state.get('verification_status')}\n"
+        f"- **OID4VP Deep Link:** {dcql_req.qr_code_uri}{wallet_mode}\n\n"
+        "Verificarea este realizată automat pentru mockul local. În LIVE, portofelul EUDI trebuie să prezinte "
+        "credentialele înainte ca verdictul să fie fetch-uit și validat.\n"
         "Beneficiarul trebuie să prezinte portofelul EUDI. Apoi spuneți „Verifică statusul acum”. "
         "Nicio plată nu poate fi executată până la verificarea criptografică externă.\n"
         f"Simulator wallet: `POST http://localhost:8080/mock-wallet/{session_id}/preset/valid`\n\n"

@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 from app.adapters.base import ICoreBankingPort, IEUDIVerifierPort
+from app.adapters.mock_wallet_api import MockEUWalletApi
 from app.domain.models import (
     DCQLRequest,
     IBANAttestationCredential,
@@ -16,6 +17,7 @@ from app.domain.models import (
     PIDCredential,
     VerificationStatus,
     WalletPresentationPayload,
+    WalletVerificationChecks,
 )
 from app.domain.validators import evaluate_wallet_presentation
 from app.telemetry import get_logger
@@ -56,6 +58,7 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
         self._requests: dict[str, DCQLRequest] = {}
         self._presentations: dict[str, WalletPresentationPayload] = {}
         self._results: dict[str, PayeeVerificationResult] = {}
+        self._wallet_api = MockEUWalletApi()
         self._sync_from_disk()
 
     def _sync_from_disk(self) -> None:
@@ -176,8 +179,6 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
             recovery_issuer_url=self.recovery_issuer_url,
         )
 
-        from app.domain.models import WalletVerificationChecks
-
         is_verified = result.status == VerificationStatus.VERIFIED
         is_rejection = result.status in {
             VerificationStatus.SUBJECT_MISMATCH,
@@ -201,8 +202,9 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
             if result.status == VerificationStatus.SUBJECT_MISMATCH:
                 result.status = VerificationStatus.REJECTED
                 result.reason = "ACCOUNT_HOLDER_MISMATCH"
-            else:
-                result.reason = "ACCOUNT_HOLDER_MISMATCH" if result.status == VerificationStatus.SUBJECT_MISMATCH else result.reason
+            elif result.status == VerificationStatus.IBAN_MISMATCH:
+                result.status = VerificationStatus.REJECTED
+                result.reason = "IBAN_MISMATCH"
 
         self._results[session_id] = result
         self._persist_to_disk()
@@ -297,55 +299,18 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
 
         scenario = scenario.strip().lower()
 
-        if scenario == "valid":
-            payload = WalletPresentationPayload(
+        try:
+            payload = await self._wallet_api.fetch_presentation(
                 session_id=session_id,
-                pid=PIDCredential(
-                    sub="urn:eu:pid:NL-12345678",
-                    given_name=expected_name.split()[0] if expected_name else "Alice",
-                    family_name=" ".join(expected_name.split()[1:]) if len(expected_name.split()) > 1 else "Visser",
-                    is_valid=True,
-                ),
-                iban_attestation=IBANAttestationCredential(
-                    sub="urn:eu:pid:NL-12345678",
-                    iban=target_iban,
-                    account_holder_name=expected_name,
-                    bank_name="ING Bank N.V.",
-                    is_valid=True,
-                    is_expired=False,
-                ),
+                expected_name=expected_name,
+                target_iban=target_iban,
+                scenario=scenario,
             )
-        elif scenario == "mismatch":
-            payload = WalletPresentationPayload(
-                session_id=session_id,
-                pid=PIDCredential(
-                    sub="urn:eu:pid:NL-88888888",
-                    given_name="Eve",
-                    family_name="Malicious",
-                    is_valid=True,
-                ),
-                iban_attestation=IBANAttestationCredential(
-                    sub="urn:eu:pid:NL-99999999",
-                    iban=target_iban,
-                    account_holder_name="Bob Mule",
-                    bank_name="ING Bank N.V.",
-                    is_valid=True,
-                    is_expired=False,
-                ),
+        except ValueError:
+            raise ValueError(
+                f"Unknown preset scenario '{scenario}'. "
+                "Supported: valid, mismatch, iban_mismatch, missing_iban"
             )
-        elif scenario == "missing_iban":
-            payload = WalletPresentationPayload(
-                session_id=session_id,
-                pid=PIDCredential(
-                    sub="urn:eu:pid:NL-12345678",
-                    given_name=expected_name.split()[0] if expected_name else "Alice",
-                    family_name=" ".join(expected_name.split()[1:]) if len(expected_name.split()) > 1 else "Visser",
-                    is_valid=True,
-                ),
-                iban_attestation=None,
-            )
-        else:
-            raise ValueError(f"Unknown preset scenario '{scenario}'. Supported: valid, mismatch, missing_iban")
 
         return await self.submit_wallet_presentation(session_id=session_id, payload=payload)
 

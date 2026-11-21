@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     # Authorization policy: execute immediately only after an external VERIFIED verdict.
     AUTO_EXECUTE_VERIFIED_PAYMENTS: bool = True
     ALLOW_MOCK_VERIFICATION: bool = True
+    MOCK_WALLET_AUTO_PRESENT: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

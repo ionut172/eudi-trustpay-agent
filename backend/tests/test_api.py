@@ -76,15 +76,12 @@ async def test_preset_scenario_valid_and_payment_execution(client: AsyncClient):
     )
     assert init_resp.status_code == 200
     assert "EUDI Wallet verification challenge initiated" in init_resp.json()["reply"]
-    assert init_resp.json()["state"]["verification_status"] == VerificationStatus.PENDING.value
+    assert init_resp.json()["state"]["verification_status"] == VerificationStatus.VERIFIED.value
     assert "Agent de Autorizare ING" in init_resp.json()["reply"]
     assert "OID4VP" in init_resp.json()["reply"]
 
-    # 2. Mock Wallet submits valid preset
-    preset_resp = await client.post(f"/mock-wallet/{session_id}/preset/valid")
-    assert preset_resp.status_code == 200
-    assert preset_resp.json()["status"] == VerificationStatus.VERIFIED.value
-    assert preset_resp.json()["verified_name"] == "Alice Visser"
+    # 2. Automatic mock wallet presentation has already produced VERIFIED
+    assert init_resp.json()["state"]["verified_payee"]["name"] == "Alice Visser"
 
     # 3. Customer checks verification status
     check_resp = await client.post(
