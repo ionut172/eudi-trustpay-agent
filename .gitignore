@@ -1,0 +1,54 @@
+# Python virtual environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Credentials and private keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+secrets/
+credentials/
+
+# Runtime and mock state
+/tmp/
+*.log
+logs/
+ing_mock_verifier_state.json
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build, coverage and distribution artifacts
+build/
+dist/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Google Cloud and local service files
+.gcloud/
+service-account*.json
+
+# ADK runtime state
+backend/agents/*/.adk/
+*.db
+*.sqlite
+*.sqlite3

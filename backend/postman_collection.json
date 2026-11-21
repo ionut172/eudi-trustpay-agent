@@ -1,0 +1,369 @@
+{
+  "info": {
+    "_postman_id": "9b1d8350-fca0-4b2e-a50d-ing-eudi-001",
+    "name": "ING EUDI Wallet Conversational Payments API",
+    "description": "Postman test collection covering Happy Path, APP Fraud Prevention (Subject Mismatch), and Bank Attestation Recovery flows.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Probes",
+      "item": [
+        {
+          "name": "Liveness Probe (healthz)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/healthz",
+              "host": ["{{base_url}}"],
+              "path": ["healthz"]
+            }
+          }
+        },
+        {
+          "name": "Readiness Probe (readyz)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/readyz",
+              "host": ["{{base_url}}"],
+              "path": ["readyz"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Flow 1 - Happy Path (EUDI Verified Instant Payment)",
+      "item": [
+        {
+          "name": "Step 1: Initiate Payment via Chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-happy-1\",\n  \"user_id\": \"user-1\",\n  \"message\": \"I want to pay 50 euros to Alice Visser at NL91INGB0001234567\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            }
+          }
+        },
+        {
+          "name": "Step 2: Payee Presents Valid EUDI Wallet Preset",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/mock-wallet/session-happy-1/preset/valid",
+              "host": ["{{base_url}}"],
+              "path": ["mock-wallet", "session-happy-1", "preset", "valid"]
+            }
+          }
+        },
+        {
+          "name": "Step 3: Customer Checks Payee Verification",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-happy-1\",\n  \"user_id\": \"user-1\",\n  \"message\": \"check payee verification status\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            }
+          }
+        },
+        {
+          "name": "Step 4: Customer Confirms Instant Payment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-happy-1\",\n  \"user_id\": \"user-1\",\n  \"message\": \"confirm and execute payment\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            }
+          }
+        },
+        {
+          "name": "Step 5: Payee Checks OID4VCI Payment Receipts",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/mock-wallet/session-happy-1/receipts",
+              "host": ["{{base_url}}"],
+              "path": ["mock-wallet", "session-happy-1", "receipts"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Flow 2 - Fraud Prevention (Subject Mismatch / Mule Account Blocked)",
+      "item": [
+        {
+          "name": "Step 1: Initiate Payment via Chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-fraud-1\",\n  \"user_id\": \"user-1\",\n  \"message\": \"Pay 150 EUR to Alice Visser at NL91INGB0001234567\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            }
+          }
+        },
+        {
+          "name": "Step 2: Fraudulent Wallet Presents Mismatched Owner",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/mock-wallet/session-fraud-1/preset/mismatch",
+              "host": ["{{base_url}}"],
+              "path": ["mock-wallet", "session-fraud-1", "preset", "mismatch"]
+            }
+          }
+        },
+        {
+          "name": "Step 3: Customer Checks Status (Fraud Warning)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-fraud-1\",\n  \"user_id\": \"user-1\",\n  \"message\": \"is payee verified?\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            }
+          }
+        },
+        {
+          "name": "Step 4: Guardrail Blocks Forced Payment Execution",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-fraud-1\",\n  \"user_id\": \"user-1\",\n  \"message\": \"proceed with payment anyway\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Flow 3 - Recovery Flow (Missing IBAN Attestation to Verified)",
+      "item": [
+        {
+          "name": "Step 1: Initiate Payment via Chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-recovery-1\",\n  \"user_id\": \"user-1\",\n  \"message\": \"Pay 200 euros to Alice Visser at NL91INGB0001234567\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            }
+          }
+        },
+        {
+          "name": "Step 2: Wallet Presents PID without IBAN Attestation",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/mock-wallet/session-recovery-1/preset/missing_iban",
+              "host": ["{{base_url}}"],
+              "path": ["mock-wallet", "session-recovery-1", "preset", "missing_iban"]
+            }
+          }
+        },
+        {
+          "name": "Step 3: Agent Informs User Recovery is Required",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-recovery-1\",\n  \"user_id\": \"user-1\",\n  \"message\": \"status of verification?\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            }
+          }
+        },
+        {
+          "name": "Step 4: Payee Issues IBAN Attestation from Bank Issuer",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/mock-wallet/session-recovery-1/recover-iban",
+              "host": ["{{base_url}}"],
+              "path": ["mock-wallet", "session-recovery-1", "recover-iban"]
+            }
+          }
+        },
+        {
+          "name": "Step 5: Customer Checks Status (Now Verified)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-recovery-1\",\n  \"user_id\": \"user-1\",\n  \"message\": \"check status now\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            }
+          }
+        },
+        {
+          "name": "Step 6: Customer Confirms Payment Execution",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-recovery-1\",\n  \"user_id\": \"user-1\",\n  \"message\": \"confirm and execute payment\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "chat"]
+            }
+          }
+        },
+        {
+          "name": "Step 7: Check Issued Payment Receipt VC",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/mock-wallet/session-recovery-1/receipts",
+              "host": ["{{base_url}}"],
+              "path": ["mock-wallet", "session-recovery-1", "receipts"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Raw Wallet Presentation",
+      "item": [
+        {
+          "name": "Submit Raw WalletPresentationPayload",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"session-raw-1\",\n  \"pid\": {\n    \"sub\": \"urn:eu:pid:NL-12345678\",\n    \"given_name\": \"Alice\",\n    \"family_name\": \"Visser\",\n    \"birth_date\": \"1992-05-14\",\n    \"is_valid\": true,\n    \"issuer\": \"eu-pid-authority\"\n  },\n  \"iban_attestation\": {\n    \"sub\": \"urn:eu:pid:NL-12345678\",\n    \"iban\": \"NL91INGB0001234567\",\n    \"account_holder_name\": \"Alice Visser\",\n    \"bank_name\": \"ING Bank N.V.\",\n    \"is_valid\": true,\n    \"is_expired\": false\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/mock-wallet/session-raw-1/present",
+              "host": ["{{base_url}}"],
+              "path": ["mock-wallet", "session-raw-1", "present"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
