@@ -48,7 +48,8 @@ Hexagonal adapter boundary for verifier and banking integrations.
 
 - `app/adapters/base.py` — interfaces implemented by mock and live adapters.
 - `app/adapters/mock_adapters.py` — persistent local verifier and core-banking simulation.
-- `app/adapters/mock_wallet_api.py` — dedicated synthetic EU Wallet response client used by mock scenarios.
+- `app/adapters/mock_wallet_api.py` — dedicated synthetic EU Wallet response client using `mock_wallets.json` fixture credentials.
+- `app/adapters/mock_wallets.json` — synthetic wallet identities and IBAN attestations used by the mock API.
 - `app/adapters/live_adapters.py` — HTTPX implementation for external live verifier and core-banking APIs.
 
 ### `tests/`

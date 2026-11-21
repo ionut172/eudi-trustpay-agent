@@ -1,0 +1,55 @@
+{
+  "wallets": {
+    "alice": {
+      "pid": {
+        "sub": "urn:eu:pid:NL-12345678",
+        "given_name": "Alice",
+        "family_name": "Visser",
+        "is_valid": true,
+        "issuer": "eu-pid-authority"
+      },
+      "iban_attestation": {
+        "sub": "urn:eu:pid:NL-12345678",
+        "iban": null,
+        "account_holder_name": "Alice Visser",
+        "bank_name": "ING Bank N.V.",
+        "is_valid": true,
+        "is_expired": false
+      }
+    },
+    "george": {
+      "pid": {
+        "sub": "urn:eu:pid:RO-12345678",
+        "given_name": "George",
+        "family_name": "Visser",
+        "is_valid": true,
+        "issuer": "eu-pid-authority"
+      },
+      "iban_attestation": {
+        "sub": "urn:eu:pid:RO-12345678",
+        "iban": "RO23INGB999900001231",
+        "account_holder_name": "George Visser",
+        "bank_name": "ING Bank N.V.",
+        "is_valid": true,
+        "is_expired": false
+      }
+    },
+    "ionut": {
+      "pid": {
+        "sub": "urn:eu:pid:RO-76543210",
+        "given_name": "Ionut",
+        "family_name": "Gabriel",
+        "is_valid": true,
+        "issuer": "eu-pid-authority"
+      },
+      "iban_attestation": {
+        "sub": "urn:eu:pid:RO-76543210",
+        "iban": "RO23INGB999900001231",
+        "account_holder_name": "Ionut Gabriel",
+        "bank_name": "ING Bank N.V.",
+        "is_valid": true,
+        "is_expired": false
+      }
+    }
+  }
+}
