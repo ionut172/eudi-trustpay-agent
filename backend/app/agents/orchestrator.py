@@ -187,14 +187,17 @@ class PaymentOrchestratorAgent:
         amount = float(amount_match.group(1)) if amount_match else 50.0
         iban = iban_match.group(1) if iban_match else "NL91INGB0001234567"
 
-        # Match 'to <Name>' where <Name> does not start with 'pay'
-        payee_name = "Alice Visser"
-        to_matches = re.findall(r"\bto\s+([A-Za-z][A-Za-z\s]*?)(?=\s+(?:with|at|for|iban|€|\d)|$)", message, re.IGNORECASE)
-        for m in to_matches:
-            m_str = m.strip()
-            if not m_str.lower().startswith("pay"):
-                payee_name = m_str
-                break
+        # Extract the name exactly as written after 'to' or 'către'.
+        payee_name = "Unknown Payee"
+        to_match = re.search(r"\b(?:to|către)\s+", message, re.IGNORECASE)
+        if to_match:
+            remainder = message[to_match.end():].strip()
+            payee_name = re.split(
+                r"\s+(?:with|at|for|la|pentru|iban)\b|\s+(?:NL|RO|DE|FR)[A-Z0-9]+",
+                remainder,
+                maxsplit=1,
+                flags=re.IGNORECASE,
+            )[0].strip()
 
         tool_reply = await initiate_payee_eudi_verification(  # type: ignore[arg-type]
             amount=amount,

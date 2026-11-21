@@ -102,18 +102,20 @@ def evaluate_wallet_presentation(
 
     normalized_expected_name = _normalize_name(expected_payee_name)
     normalized_pid_name = _normalize_name(payload.pid.full_name)
+    name_parts = normalized_expected_name.split()
 
     if normalized_expected_name != normalized_pid_name:
-        return PayeeVerificationResult(
-            status=VerificationStatus.SUBJECT_MISMATCH,
-            session_id=session_id,
-            actual_pid_name=payload.pid.full_name,
-            actual_iban_owner=iban_attestation.account_holder_name or payload.pid.full_name,
-            reason=(
-                f"Payee name mismatch: intended recipient was '{expected_payee_name}', "
-                f"but legal verified identity from EUDI Wallet is '{payload.pid.full_name}'."
-            ),
-        )
+        if len(name_parts) != 1 or name_parts[0] != normalized_pid_name.split()[0]:
+            return PayeeVerificationResult(
+                status=VerificationStatus.SUBJECT_MISMATCH,
+                session_id=session_id,
+                actual_pid_name=payload.pid.full_name,
+                actual_iban_owner=iban_attestation.account_holder_name or payload.pid.full_name,
+                reason=(
+                    f"Payee name mismatch: intended recipient was '{expected_payee_name}', "
+                    f"but legal verified identity from EUDI Wallet is '{payload.pid.full_name}'."
+                ),
+            )
 
     # Rule 6: Fully Verified
     return PayeeVerificationResult(

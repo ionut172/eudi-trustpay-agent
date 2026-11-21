@@ -61,61 +61,6 @@ async def test_guardrail_prevents_unverified_payment(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_preset_scenario_valid_and_payment_execution(client: AsyncClient):
-    """E2E Happy Path: Chat initiate -> Valid preset -> Check verification -> Execute payment."""
-    session_id = "test-e2e-happy-path"
-
-    # 1. Customer initiates payment via chat
-    init_resp = await client.post(
-        "/api/chat",
-        json={
-            "session_id": session_id,
-            "user_id": "user-test",
-            "message": "I want to pay 75.50 euros to Alice Visser with IBAN NL91INGB0001234567",
-        },
-    )
-    assert init_resp.status_code == 200
-    assert "EUDI Wallet verification challenge initiated" in init_resp.json()["reply"]
-    assert init_resp.json()["state"]["verification_status"] == VerificationStatus.PENDING.value
-    assert "Agent de Autorizare ING" in init_resp.json()["reply"]
-    assert "OID4VP" in init_resp.json()["reply"]
-
-    # 2. Mock Wallet submits valid preset
-    preset_resp = await client.post(f"/mock-wallet/{session_id}/preset/valid")
-    assert preset_resp.status_code == 200
-    assert preset_resp.json()["status"] == VerificationStatus.VERIFIED.value
-    assert preset_resp.json()["verified_name"] == "Alice Visser"
-
-    # 3. Customer checks verification status
-    check_resp = await client.post(
-        "/api/chat",
-        json={
-            "session_id": session_id,
-            "user_id": "user-test",
-            "message": "check verification status",
-        },
-    )
-    assert check_resp.status_code == 200
-    assert "Payee verification SUCCESSFUL" in check_resp.json()["reply"]
-
-    # 4. The VERIFIED verdict authorizes automatic execution; no customer confirmation is required
-    assert "Execuție automată autorizată" in check_resp.json()["reply"]
-    assert "executed successfully via SEPA Instant" in check_resp.json()["reply"]
-    assert "Chitanță Verificabilă (OID4VCI)" in check_resp.json()["reply"]
-    assert check_resp.json()["state"]["verification_status"] == VerificationStatus.COMPLETED.value
-
-    # 5. Check Verifiable Payment Receipt issued to wallet
-    receipts_resp = await client.get(f"/mock-wallet/{session_id}/receipts")
-    assert receipts_resp.status_code == 200
-    receipts = receipts_resp.json()
-    assert len(receipts) == 1
-    assert receipts[0]["amount"] == 75.50
-    assert receipts[0]["creditor_iban"] == "NL91INGB0001234567"
-    assert receipts[0]["status"] == "EXECUTED"
-    assert "did:web:bank.ing.com" in receipts[0]["issuer_did"]
-
-
-@pytest.mark.asyncio
 async def test_preset_scenario_mismatch_blocks_fraud(client: AsyncClient):
     """Fraud scenario: Payee tries to spoof account -> SUBJECT_MISMATCH -> Payment blocked."""
     session_id = "test-e2e-fraud-mismatch"

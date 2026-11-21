@@ -5,6 +5,7 @@ from typing import Any, AsyncGenerator, List
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from app.adapters.live_adapters import get_adapters
+from app.adapters.mock_wallet_api import MockEUWalletApi
 from app.agents.orchestrator import get_orchestrator
 from app.config import get_settings
 from app.domain.models import (
@@ -179,3 +180,28 @@ async def get_receipts(session_id: str) -> List[PaymentReceiptVC]:
     """Retrieves all signed PaymentReceiptVC credentials issued back to the wallet."""
     _, core_banking = get_adapters(settings)
     return await core_banking.get_receipts(session_id=session_id)
+
+
+@app.get("/mock-eu-wallet/wallets", tags=["Mock EU Wallet"])
+async def list_mock_wallets() -> dict[str, Any]:
+    """Lists the synthetic wallets available in the JSON fixture."""
+    wallet_api = MockEUWalletApi()
+    return {"wallets": wallet_api.list_wallet_ids()}
+
+
+@app.post(
+    "/mock-eu-wallet/{wallet_id}/present/{session_id}",
+    response_model=PayeeVerificationResult,
+    tags=["Mock EU Wallet"],
+)
+async def present_mock_wallet(wallet_id: str, session_id: str) -> PayeeVerificationResult:
+    """Fetches credentials from the JSON fixture and submits them to the verifier."""
+    wallet_api = MockEUWalletApi()
+    payload = await wallet_api.fetch_wallet_presentation(
+        session_id=session_id,
+        wallet_id=wallet_id,
+    )
+    verifier, _ = get_adapters(settings)
+    result = await verifier.submit_wallet_presentation(session_id=session_id, payload=payload)
+    await _sync_adk_session_verification(session_id, result)
+    return result
