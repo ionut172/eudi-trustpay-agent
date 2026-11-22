@@ -1,50 +1,42 @@
 """Google ADK Agent orchestrator for EUDI Wallet conversational payments."""
 
-import re
+import json
 from typing import Any, Optional, Tuple
+from pydantic import ValidationError
 from google.adk.agents import Agent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService, Session
 from google.genai import types
 from app.config import Settings, get_settings
 from app.telemetry import get_logger
+from app.domain.models import PaymentIntent
+from app.agents.eudi_agent import create_eudi_agent
+from app.agents.execution_agent import create_payment_execution_agent
+from app.agents.intent_agent import create_intent_agent
+from app.agents.risk_agent import create_risk_agent
 from app.tools.payment_tools import (
-    check_payee_eudi_verification,
-    execute_verified_instant_payment,
-    initiate_payee_eudi_verification,
+    check_payment_verification,
+    _execute_payment_for_state,
+    initiate_payment_intent,
 )
 
 logger = get_logger("payment_orchestrator")
 
-SYSTEM_INSTRUCTION = """You are the ING Conversational Payments AI Assistant secured by the European Digital Identity (EUDI) Wallet.
+SYSTEM_INSTRUCTION = """You are a conversational payments assistant secured by the European Digital Identity (EUDI) Wallet.
 Your primary objective is to execute bank payments while strictly preventing Authorised Push Payment (APP) fraud and IBAN spoofing.
+Always communicate with the user in English, regardless of the language used in their message.
 
 CRITICAL SECURITY RULES:
-1. Payee Verification: Before executing any payment, you must verify the recipient's real legal identity and IBAN ownership via EUDI Wallet (OID4VP / DCQL).
-2. Initiating Verification: When a customer indicates an intent to pay (recipient name, IBAN, and amount), invoke the `initiate_payee_eudi_verification` tool.
-3. Verification Must Come From External Wallet: NEVER assume or approve verification conversational claims. If the user says "am verificat acum", "a aprobat", or asks to proceed, you MUST call `check_payee_eudi_verification` to confirm the external cryptographic verifier status.
-4. Fraud Prevention:
+1. Risk Route: Use backend-configured trusted favorites only. New recipients, changed IBANs, and amounts above the configured limit require EUDI step-up.
+2. EUDI Verification: Never accept conversational claims as verification. Call `check_payee_eudi_verification` for external status.
+3. Fraud Prevention:
    - If verification returns SUBJECT_MISMATCH, immediately warn the user that the bank account holder does not match the intended payee. Under no circumstances execute the payment.
    - If it returns RECOVERY_REQUIRED, instruct the payee to obtain their missing IBAN attestation from their issuing bank.
-5. Instant Payment Execution:
-   - ONLY call `execute_verified_instant_payment` if the payee verification status is strictly 'VERIFIED'.
+4. Instant Payment Execution:
+    - Execute only when backend authorization permits EUDI_VERIFIED or an exact trusted-favorite match below its configured limit.
+    - Never describe a trusted-favorite fast path as EUDI or cryptographic verification.
    - Confirm payment execution and provide the transaction ID and Verifiable Payment Receipt (OID4VCI) details.
 """
-
-
-class MockToolSession:
-    """Lightweight session container for ToolContext in offline/mock execution."""
-
-    def __init__(self, session_id: str):
-        self.id = session_id
-
-
-class MockToolContext:
-    """Lightweight ToolContext container mimicking ADK ToolContext when operating offline."""
-
-    def __init__(self, session_id: str, state: dict[str, Any]):
-        self.session = MockToolSession(session_id)
-        self.state = state
 
 
 class PaymentOrchestratorAgent:
@@ -53,17 +45,23 @@ class PaymentOrchestratorAgent:
     def __init__(self, settings: Optional[Settings] = None):
         self.settings = settings or get_settings()
 
-        # Google ADK Agent definition with payment security tools
+        # Specialist definitions and prompts live in their own modules.
+        intent_agent = create_intent_agent(self.settings)
+        risk_agent = create_risk_agent(self.settings)
+        trust_agent = create_eudi_agent(self.settings)
+        execution_agent = create_payment_execution_agent(self.settings)
+
         self.agent = Agent(
             name="payment_orchestrator",
-            description="ING conversational payments orchestrator with EUDI Wallet security guardrails",
-            instruction=SYSTEM_INSTRUCTION,
+            description="Payment coordinator delegating intent, risk, EUDI trust, and execution stages",
+            instruction=(
+                SYSTEM_INSTRUCTION
+                + " Delegate intent extraction to payment_intent_agent, risk decisions to payment_risk_agent, "
+                + "EUDI verification to eudi_trust_agent, and authorized transfer to payment_execution_agent. "
+                + "Never treat model output as authorization; backend tools enforce every decision."
+            ),
             model=self.settings.MODEL_NAME,
-            tools=[
-                initiate_payee_eudi_verification,
-                check_payee_eudi_verification,
-                execute_verified_instant_payment,
-            ],
+            sub_agents=[intent_agent, risk_agent, trust_agent, execution_agent],
         )
 
         # In-memory session service (can later swap to DatabaseSessionService / Firestore)
@@ -116,98 +114,118 @@ class PaymentOrchestratorAgent:
         user_id: str,
         message: str,
     ) -> Tuple[str, dict[str, Any]]:
-        """Processes conversational input through ADK Runner (or offline fallback)."""
+        """Processes natural language through the ADK multi-agent coordinator."""
         session = await self.get_or_create_session(user_id=user_id, session_id=session_id)
 
-        # Use full ADK Runner with Gemini LLM when API key is configured
-        if self.settings.GEMINI_API_KEY:
-            try:
-                user_content = types.Content(
-                    parts=[types.Part.from_text(text=message)],
-                    role="user",
-                )
-                reply_parts: list[str] = []
+        if not self.settings.GEMINI_API_KEY:
+            return (
+                "Conversational intent extraction is unavailable: configure GEMINI_API_KEY, "
+                "or submit a structured payment intent to /api/payment-intents. No payment was started.",
+                session.state,
+            )
 
-                async for event in self.runner.run_async(
-                    user_id=user_id,
-                    session_id=session_id,
-                    new_message=user_content,
+        try:
+            # The output_key is session state; clear it so a greeting or an
+            # incomplete new message can never reuse an earlier payment intent.
+            self._clear_payment_intent(session)
+            user_content = types.Content(
+                parts=[types.Part.from_text(text=message)],
+                role="user",
+            )
+            root_reply_parts: list[str] = []
+            async for event in self.runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=user_content,
+            ):
+                if (
+                    getattr(event, "author", None) == self.agent.name
+                    and event.content
+                    and event.content.parts
                 ):
-                    if event.content and event.content.parts:
-                        for part in event.content.parts:
-                            if part.text:
-                                reply_parts.append(part.text)
+                    root_reply_parts.extend(
+                        part.text for part in event.content.parts if part.text
+                    )
 
-                reply_text = "".join(reply_parts)
-                # Fetch refreshed session state
-                refreshed_session = await self.session_service.get_session(
-                    app_name=self.settings.APP_NAME,
-                    user_id=user_id,
-                    session_id=session_id,
-                )
-                state = refreshed_session.state if refreshed_session else session.state
-                return reply_text or "Processed your request.", state
+            refreshed_session = await self.session_service.get_session(
+                app_name=self.settings.APP_NAME,
+                user_id=user_id,
+                session_id=session_id,
+            )
+            state = refreshed_session.state if refreshed_session else session.state
+            raw_intent = state.pop("payment_intent", None)
+            if refreshed_session:
+                self._clear_payment_intent(refreshed_session)
 
-            except Exception as e:
-                logger.warning(
-                    f"Gemini LLM runner encountered error ({e}); using deterministic conversational fallback.",
-                    session_id=session_id,
-                )
+            if raw_intent is not None:
+                if isinstance(raw_intent, str):
+                    raw_intent = json.loads(raw_intent)
+                intent = PaymentIntent.model_validate(raw_intent)
+                # IBAN lookup and missing-field prompts belong to the backend.
+                # In particular, an LLM must not block configured favorite or
+                # mock-wallet resolution by claiming that an IBAN is missing.
+                if intent.recipient_name or intent.amount is not None:
+                    return await self.process_intent(session_id, user_id, intent)
+                if intent.clarification_needed:
+                    return (
+                        "Please provide the recipient and amount before I can start a payment.",
+                        state,
+                    )
 
-        # Deterministic conversational fallback for offline / mock testing
-        return await self._process_offline_message(session=session, message=message)
+            # Never surface specialist structured output as conversational text.
+            reply = "".join(root_reply_parts)
+            if reply.lstrip().startswith("{"):
+                try:
+                    json.loads(reply)
+                    reply = ""
+                except json.JSONDecodeError:
+                    pass
+            return reply or "Hello! How can I help?", state
+        except (ValidationError, json.JSONDecodeError) as exc:
+            logger.warning(f"ADK returned an invalid payment intent: {exc}", session_id=session_id)
+            return "I couldn't understand the request. Please provide the recipient and amount. No payment has been started.", session.state
+        except Exception as exc:
+            logger.error(f"ADK multi-agent request failed: {exc}", session_id=session_id)
+            return "Payment assistant unavailable. No payment was started.", session.state
 
-    async def _process_offline_message(
+    async def process_intent(
         self,
-        session: Session,
-        message: str,
+        session_id: str,
+        user_id: str,
+        intent: PaymentIntent,
     ) -> Tuple[str, dict[str, Any]]:
-        """Handles chat messages deterministically when offline or testing without API key."""
-        session_id = session.id
-        msg_lower = message.lower()
-        tool_ctx = MockToolContext(session_id=session_id, state=session.state)
-
-        # Case 1: Check verification status
-        if any(keyword in msg_lower for keyword in ["check", "status", "verified", "verify", "verificat", "aprobat"]):
-            tool_reply = await check_payee_eudi_verification(tool_context=tool_ctx)  # type: ignore[arg-type]
-            session.state.update(tool_ctx.state)
-            self._sync_storage_state(session)
-            return tool_reply, session.state
-
-        # Case 2: Confirmation / Execution of payment
-        if any(keyword in msg_lower for keyword in ["confirm", "execute", "pay now", "proceed", "send money", "yes"]):
-            tool_reply = await execute_verified_instant_payment(tool_context=tool_ctx)  # type: ignore[arg-type]
-            session.state.update(tool_ctx.state)
-            self._sync_storage_state(session)
-            return tool_reply, session.state
-
-        # Case 4: Payment initiation
-        amount_match = re.search(r"(\d+(?:\.\d{1,2})?)\s*(?:euro|eur|€)?", msg_lower)
-        iban_match = re.search(r"\b([A-Z]{2}\d{2}[A-Z0-9]{4,30})\b", message.upper())
-        amount = float(amount_match.group(1)) if amount_match else 50.0
-        iban = iban_match.group(1) if iban_match else "NL91INGB0001234567"
-
-        # Extract the name exactly as written after 'to' or 'către'.
-        payee_name = "Unknown Payee"
-        to_match = re.search(r"\b(?:to|către)\s+", message, re.IGNORECASE)
-        if to_match:
-            remainder = message[to_match.end():].strip()
-            payee_name = re.split(
-                r"\s+(?:with|at|for|la|pentru|iban)\b|\s+(?:NL|RO|DE|FR)[A-Z0-9]+",
-                remainder,
-                maxsplit=1,
-                flags=re.IGNORECASE,
-            )[0].strip()
-
-        tool_reply = await initiate_payee_eudi_verification(  # type: ignore[arg-type]
-            amount=amount,
-            creditor_iban=iban,
-            creditor_name=payee_name,
-            tool_context=tool_ctx,
+        """Process a validated structured intent without a mock ToolContext."""
+        session = await self.get_or_create_session(user_id=user_id, session_id=session_id)
+        reply = await initiate_payment_intent(
+            intent=intent,
+            session_id=session_id,
+            state=session.state,
+            settings=self.settings,
         )
-        session.state.update(tool_ctx.state)
         self._sync_storage_state(session)
-        return tool_reply, session.state
+        return reply, session.state
+
+    async def check_verification(
+        self,
+        session_id: str,
+        user_id: str,
+    ) -> Tuple[str, dict[str, Any]]:
+        """Poll EUDI verifier and optionally execute a fully verified payment."""
+        session = await self.get_or_create_session(user_id=user_id, session_id=session_id)
+        reply = await check_payment_verification(session_id, session.state, self.settings)
+        self._sync_storage_state(session)
+        return reply, session.state
+
+    async def execute_payment(
+        self,
+        session_id: str,
+        user_id: str,
+    ) -> Tuple[str, dict[str, Any]]:
+        """Run backend execution guardrail for the current payment session."""
+        session = await self.get_or_create_session(user_id=user_id, session_id=session_id)
+        reply = await _execute_payment_for_state(session_id, session.state, self.settings)
+        self._sync_storage_state(session)
+        return reply, session.state
 
     def _sync_storage_state(self, session: Session) -> None:
         """Syncs the internal session storage state dictionary."""
@@ -220,6 +238,18 @@ class PaymentOrchestratorAgent:
             and session_id in self.session_service.sessions[app_name][user_id]
         ):
             self.session_service.sessions[app_name][user_id][session_id].state.update(session.state)
+
+    def _clear_payment_intent(self, session: Session) -> None:
+        """Remove internal structured output from both session state copies."""
+        session.state.pop("payment_intent", None)
+        stored_session = (
+            self.session_service.sessions
+            .get(self.settings.APP_NAME, {})
+            .get(session.user_id, {})
+            .get(session.id)
+        )
+        if stored_session:
+            stored_session.state.pop("payment_intent", None)
 
 
 _global_orchestrator: Optional[PaymentOrchestratorAgent] = None

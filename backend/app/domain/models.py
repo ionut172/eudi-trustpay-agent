@@ -18,6 +18,8 @@ class VerificationStatus(str, Enum):
     TRUST_ERROR = "TRUST_ERROR"
     RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
     COMPLETED = "COMPLETED"
+    FAST_PATH_APPROVED = "FAST_PATH_APPROVED"
+    STEP_UP_REQUIRED = "STEP_UP_REQUIRED"
 
 
 class PIDCredential(BaseModel):
@@ -44,7 +46,7 @@ class IBANAttestationCredential(BaseModel):
     sub: Optional[str] = Field(default=None, description="Subject identifier bound to the account owner")
     iban: Optional[str] = Field(default=None, description="International Bank Account Number")
     account_holder_name: Optional[str] = Field(default=None, description="Account holder name at bank")
-    bank_name: str = Field(default="ING Bank N.V.", description="Issuing bank name")
+    bank_name: str = Field(default="Demo Issuer Bank", description="Synthetic issuer name used by the mock adapter")
     is_valid: bool = Field(default=True, description="Cryptographic signature status")
     is_expired: bool = Field(default=False, description="Whether attestation validity window expired")
 
@@ -118,6 +120,22 @@ class PaymentExecutionRequest(BaseModel):
     reference: str = "Conversational Payment via EUDI Wallet"
 
 
+class PaymentAuthorization(BaseModel):
+    """Backend-issued authorization bound to one exact payment instruction."""
+
+    decision: Literal["EUDI_VERIFIED", "TRUSTED_FAVORITE"]
+    session_id: str
+    recipient_name: str
+    recipient_iban: str
+    amount: float = Field(gt=0)
+    currency: str = "EUR"
+    verification_id: Optional[str] = None
+    favorite_name: Optional[str] = None
+    max_amount: Optional[float] = None
+    reason: str
+    authorized_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
+
+
 class PaymentReceiptVC(BaseModel):
     """Signed Verifiable Credential issued to EUDI Wallet via OID4VCI upon payment."""
 
@@ -131,7 +149,7 @@ class PaymentReceiptVC(BaseModel):
     creditor_name: str
     status: str = "EXECUTED"
     timestamp: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
-    issuer_did: str = "did:web:bank.ing.com"
+    issuer_did: str = "did:web:issuer.example.com"
     issuer_signature: str
 
 
@@ -159,3 +177,32 @@ class ChatResponse(BaseModel):
     session_id: str
     reply: str
     state: dict[str, Any]
+
+
+class PaymentIntent(BaseModel):
+    """Structured payment intent extracted by the intent agent or API client."""
+
+    recipient_name: Optional[str] = None
+    recipient_iban: Optional[str] = None
+    amount: Optional[float] = Field(default=None, gt=0)
+    currency: str = "EUR"
+    clarification_needed: Optional[str] = None
+
+
+class PaymentIntentRequest(BaseModel):
+    """Typed payment-intent endpoint for integrations without an LLM."""
+
+    session_id: str
+    user_id: str = "user-1"
+    intent: PaymentIntent
+
+
+class PaymentRiskAssessment(BaseModel):
+    """Business risk decision produced by the intent/risk agent."""
+
+    route: Literal["FAST_PATH_APPROVED", "STEP_UP_REQUIRED", "CLARIFY"]
+    recipient_name: Optional[str] = None
+    recipient_iban: Optional[str] = None
+    amount: Optional[float] = None
+    currency: str = "EUR"
+    reason: str

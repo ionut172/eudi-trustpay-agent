@@ -5,6 +5,7 @@ from typing import Optional
 from app.domain.models import (
     DCQLRequest,
     PayeeVerificationResult,
+    PaymentAuthorization,
     PaymentExecutionRequest,
     PaymentReceiptVC,
     WalletPresentationPayload,
@@ -63,9 +64,10 @@ class ICoreBankingPort(ABC):
     async def execute_instant_payment(
         self,
         payment_request: PaymentExecutionRequest,
-        verification: PayeeVerificationResult,
+        authorization: PaymentAuthorization,
+        verification: Optional[PayeeVerificationResult] = None,
     ) -> PaymentReceiptVC:
-        """Executes instant SEPA transfer and issues an OID4VCI PaymentReceipt credential."""
+        """Executes a payment only with bound EUDI or trusted-favorite authorization."""
         pass
 
     @abstractmethod

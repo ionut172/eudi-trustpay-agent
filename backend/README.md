@@ -1,93 +1,42 @@
-# ING EUDI TrustPay Agent — Backend
+# Backend
 
-FastAPI and Google ADK backend for conversational instant payments secured by EUDI Wallet verification.
+FastAPI API and Google ADK orchestration for the agentic payment middleware prototype. The backend parses conversational intents, applies deterministic policy, coordinates mock EUDI verification, and guards the payment-adapter call.
 
-## Development flow
+> This is a development/demo backend only. The mock credentials, verifier results, recovery action, and payments are synthetic. The HTTPX `LIVE` adapters are integration stubs; they are not a production-ready EUDI or banking connection. The API also lacks customer authentication and session ownership enforcement.
+
+## Run and test
+
+From this directory:
 
 ```bash
-cd backend
+cp .env.example .env
 uv sync
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
-uv run pytest
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload
 ```
 
-Copy `.env.example` to `.env` for local configuration. Never commit `.env` or real credentials.
+Set `GEMINI_API_KEY` in the ignored local `.env` to enable conversational extraction. The Google GenAI SDK also reads `GOOGLE_API_KEY`; `app/config.py` bridges the configured Gemini key at runtime. Never commit secrets.
 
-## Repository structure
+Run the backend tests with `uv run pytest`. They use mock components and make no live payment or verifier calls.
 
-### `app/`
+## Structure
 
-The application package contains the HTTP API, agent orchestration, domain rules and external-system adapters.
+- `app/main.py` — FastAPI routes for chat, payment intents, verification, execution, and development-only mock-wallet scenarios.
+- `app/agents/` — ADK coordinator and intent, risk, EUDI, and execution specialist agents.
+- `app/tools/payment_tools.py` — deterministic recipient resolution, authorization checks, verifier polling, and adapter execution.
+- `app/domain/` — typed payment and credential models plus local mock-presentation validation.
+- `app/adapters/base.py` — verifier/payment adapter interfaces.
+- `app/adapters/mock_adapters.py` — synthetic verifier and core-banking implementations.
+- `app/adapters/mock_wallet_api.py` and `mock_wallets.json` — local fixture wallets and recipients.
+- `app/adapters/live_adapters.py` — illustrative HTTPX integration stubs; configure and security-review them before any live use.
+- `tests/` — API, authorization-flow, agent-handoff, and validator regression tests.
 
-- `app/main.py` — FastAPI application, route registration, health endpoints, chat endpoint and mock wallet endpoints.
-- `app/config.py` — environment configuration and adapter mode settings.
-- `app/telemetry.py` — structured application logging setup.
+## Authorization behavior
 
-### `app/agents/`
+- LLM output is intent data only; it cannot authorize a transfer.
+- New/changed recipients or payments outside trusted-recipient settings require step-up verification.
+- The backend checks payment and verification state before calling the payment adapter.
+- In this prototype, an exact server-configured trusted-recipient match can use a separate fast path; it is not EUDI verification.
+- `MOCK_WALLET_AUTO_PRESENT=false` leaves wallet presentation as a manual demo action.
+- `AUTO_EXECUTE_VERIFIED_PAYMENTS` controls the demo’s post-verdict execution behavior.
 
-Google ADK orchestration.
-
-- `app/agents/orchestrator.py` — creates the payment agent, manages sessions and chooses automatic versus fallback conversation handling.
-
-### `app/tools/`
-
-ADK tools used by the payment agent.
-
-- `app/tools/payment_tools.py` — starts verification, checks wallet verification and executes instant payments behind code-level guardrails.
-
-### `app/domain/`
-
-Framework-independent payment and verification models.
-
-- `app/domain/models.py` — Pydantic request, credential, verification and receipt models.
-- `app/domain/validators.py` — pure wallet presentation validation rules.
-
-### `app/adapters/`
-
-Hexagonal adapter boundary for verifier and banking integrations.
-
-- `app/adapters/base.py` — interfaces implemented by mock and live adapters.
-- `app/adapters/mock_adapters.py` — persistent local verifier and core-banking simulation.
-- `app/adapters/mock_wallet_api.py` — dedicated synthetic EU Wallet response client using `mock_wallets.json` fixture credentials.
-- `app/adapters/mock_wallets.json` — synthetic wallet identities and IBAN attestations used by the mock API.
-- `app/adapters/live_adapters.py` — HTTPX implementation for external live verifier and core-banking APIs.
-
-### `tests/`
-
-FastAPI integration and domain validation tests.
-
-- `tests/test_api.py` — API and end-to-end conversation scenarios.
-- `tests/test_validators.py` — credential trust, subject binding and IBAN matching rules.
-
-### Other backend files
-
-- `pyproject.toml` — Python dependencies and pytest configuration.
-- `uv.lock` — reproducible dependency versions.
-- `postman_collection.json` — manually usable API scenarios.
-- `Dockerfile` — container build definition.
-- `.env.example` — safe configuration template; `.env` is ignored by Git.
-
-## Payment authorization flow
-
-1. The chat handler receives a payment intent.
-2. `payment_tools.initiate_payee_eudi_verification` creates a pending OID4VP request.
-3. In mock mode, `mock_wallet_api.py` supplies a synthetic wallet presentation.
-4. `domain/validators.py` evaluates identity, credential validity and IBAN ownership binding.
-5. Only a result with status `VERIFIED` may reach the instant-payment guardrail.
-6. `payment_tools.execute_verified_instant_payment` verifies the status again before touching the core-banking adapter.
-7. A successful mock payment generates a signed mock `PaymentReceiptVC` credential.
-
-## Key guardrail
-
-A live or mock agent must never rely on conversational text to approve a payment. The execution tool retrieves the verification result and refuses everything except `VERIFIED`. Mock mode is unsuitable for live or production execution.
-
-## Mock scenarios
-
-The mock adapter supports:
-
-- `valid` — valid PID and matching IBAN attestation;
-- `mismatch` — subject/account-holder mismatch;
-- `iban_mismatch` — same identity but a different wallet IBAN;
-- `missing_iban` — PID is present but IBAN attestation is missing.
-
-Preset routes are test facilities and should be disabled outside development.
+Do not treat mock status flags or generated mock receipt signatures as cryptographic proof. See the root [README](../README.md) and [live integration checklist](../integration.md) for scope and production gaps.

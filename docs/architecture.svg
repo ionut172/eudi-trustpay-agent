@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">Agentic banking payments middleware architecture</title>
+  <desc id="desc">A generic customer mobile banking chat sends a payment intent to FastAPI and an ADK coordinator. Deterministic guardrails route to an EUDI verifier and wallet, then an authorized payment goes through a bank adapter. No financial institution is connected. Mock implementations are used in this prototype; live HTTP adapters are stubs.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#71869a"/></marker>
+    <style>
+      text{font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#17324d}
+      .title{font-size:27px;font-weight:700;letter-spacing:-.4px}.sub{font-size:14px;fill:#64788b}
+      .heading{font-size:16px;font-weight:650}.body{font-size:13px;fill:#496277}.small{font-size:11px;fill:#64788b}
+      .box{fill:#fff;stroke:#d6e0e8;stroke-width:1.5}.channel{fill:#fffaf6;stroke:#f2c39f}.middleware{fill:#f4f8fb;stroke:#abc3d4}.guard{fill:#f0f8f3;stroke:#9bcbb1}.external{fill:#fff;stroke:#bdcbd6}
+      .arrow{fill:none;stroke:#71869a;stroke-width:2;marker-end:url(#arrow)}.arrow2{fill:none;stroke:#71869a;stroke-width:2;marker-end:url(#arrow)}
+      .badge{font-size:10px;font-weight:650;letter-spacing:.35px}.badgeMock{fill:#fff3dc}.badgeLive{fill:#eaf3f8}.badgeText{font-size:10px;font-weight:650;fill:#496277}
+    </style>
+  </defs>
+  <rect width="1200" height="760" rx="20" fill="#f4f7fa"/>
+  <text x="56" y="60" class="title">Agentic banking payments</text>
+  <text x="56" y="86" class="sub">Generic customer channel · reusable middleware · pluggable bank-adapter boundary</text>
+
+  <!-- Customer channel -->
+  <rect x="55" y="145" width="250" height="470" rx="28" fill="#17324d"/>
+  <rect x="64" y="154" width="232" height="452" rx="21" fill="#fff"/>
+  <rect x="64" y="154" width="232" height="34" rx="21" fill="#fff"/>
+  <text x="82" y="176" class="small" style="font-weight:700">9:41</text>
+  <text x="258" y="176" class="small" text-anchor="end">● ● ▰</text>
+  <text x="83" y="220" class="heading">Digital Banking</text>
+  <text x="83" y="244" class="small">Conversational payments · prototype</text>
+  <rect x="82" y="266" width="196" height="70" rx="12" fill="#f5f8fa" stroke="#e1e8ed"/>
+  <text x="96" y="289" class="small" style="font-weight:650">CONTACTS</text>
+  <circle cx="106" cy="314" r="13" fill="#eaf3f8"/><text x="106" y="318" text-anchor="middle" class="small" style="font-weight:700">A</text>
+  <circle cx="151" cy="314" r="13" fill="#eaf3f8"/><text x="151" y="318" text-anchor="middle" class="small" style="font-weight:700">G</text>
+  <circle cx="196" cy="314" r="13" fill="#eaf3f8"/><text x="196" y="318" text-anchor="middle" class="small" style="font-weight:700">I</text>
+  <text x="83" y="370" class="heading">Send a payment</text>
+  <text x="83" y="395" class="body">“Send €75 to Alice”</text>
+  <rect x="101" y="415" width="177" height="83" rx="12" fill="#f5f8fa" stroke="#d6e0e8"/>
+  <text x="116" y="439" class="body">I’ll check the account</text>
+  <text x="116" y="459" class="body">before sending.</text>
+  <text x="116" y="482" class="small">EUDI verification started</text>
+  <rect x="82" y="530" width="196" height="43" rx="10" fill="#fff" stroke="#cbd7e0"/>
+  <text x="97" y="556" class="small">Message your bank…</text>
+  <text x="180" y="642" text-anchor="middle" class="heading">Customer experience</text>
+  <text x="180" y="663" text-anchor="middle" class="small">Contacts are demo fixtures here</text>
+
+  <!-- Middleware -->
+  <rect x="370" y="145" width="455" height="470" rx="18" class="middleware"/>
+  <text x="400" y="183" class="heading">Agentic payment middleware</text>
+  <text x="400" y="207" class="small">Channel-independent orchestration and policy enforcement</text>
+  <rect x="400" y="238" width="395" height="70" rx="12" class="box"/>
+  <text x="422" y="265" class="heading">FastAPI channel API</text>
+  <text x="422" y="287" class="body">Chat · payment intent · status · execution</text>
+  <rect x="400" y="332" width="395" height="87" rx="12" class="box"/>
+  <text x="422" y="359" class="heading">Google ADK coordinator</text>
+  <text x="422" y="382" class="body">Intent specialist · risk specialist · EUDI specialist</text>
+  <text x="422" y="402" class="small">Model extracts/coordinates; it does not authorize payment</text>
+  <rect x="400" y="443" width="395" height="100" rx="12" class="guard"/>
+  <text x="422" y="471" class="heading">Deterministic backend guardrails</text>
+  <text x="422" y="495" class="body">Recipient resolution · pending-payment binding</text>
+  <text x="422" y="517" class="body">Verification checks · authorization · execution gate</text>
+  <rect x="400" y="562" width="192" height="31" rx="8" class="badgeMock"/>
+  <text x="496" y="582" text-anchor="middle" class="badgeText">MOCK · active demo path</text>
+  <rect x="602" y="562" width="193" height="31" rx="8" class="badgeLive"/>
+  <text x="698" y="582" text-anchor="middle" class="badgeText">LIVE · HTTP integration stubs</text>
+
+  <!-- External services -->
+  <rect x="900" y="180" width="245" height="120" rx="16" class="external"/>
+  <text x="926" y="214" class="heading">EUDI Wallet / verifier</text>
+  <text x="926" y="239" class="body">OID4VP + DCQL request</text>
+  <text x="926" y="261" class="body">PID + IBAN ownership evidence</text>
+  <text x="926" y="284" class="small">Mock presentation in this prototype</text>
+  <rect x="900" y="400" width="245" height="120" rx="16" class="external"/>
+  <text x="926" y="434" class="heading">Bank payment adapters</text>
+  <text x="926" y="459" class="body">Bank-specific adapter interface</text>
+  <text x="926" y="481" class="body">Configure for an approved provider</text>
+  <text x="926" y="504" class="small">Mock core banking; no bank connected</text>
+
+  <!-- Flow arrows -->
+  <path d="M305 270 H370" class="arrow"/>
+  <text x="337" y="258" text-anchor="middle" class="small">intent</text>
+  <path d="M370 367 H340 V450 H305" class="arrow"/>
+  <text x="338" y="431" text-anchor="middle" class="small">reply</text>
+  <path d="M825 278 H900" class="arrow"/>
+  <text x="863" y="266" text-anchor="middle" class="small">request</text>
+  <path d="M900 298 H850 V485 H795" class="arrow"/>
+  <text x="872" y="322" class="small">verdict</text>
+  <path d="M825 493 H900" class="arrow"/>
+  <text x="862" y="481" text-anchor="middle" class="small">authorized only</text>
+  <path d="M900 515 H850 V580 H795" class="arrow"/>
+  <text x="872" y="557" class="small">receipt</text>
+
+  <text x="600" y="706" text-anchor="middle" class="small">Illustrative architecture only — no real wallet, verifier, contacts, or banking connection is bundled.</text>
+</svg>

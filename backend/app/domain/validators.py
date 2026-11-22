@@ -27,7 +27,7 @@ def evaluate_wallet_presentation(
     payload: WalletPresentationPayload,
     expected_iban: str,
     expected_payee_name: str,
-    recovery_issuer_url: str = "https://bank.ing.com/wallet-issuance/iban-attestation",
+    recovery_issuer_url: str = "https://issuer.example.com/attestations/iban",
 ) -> PayeeVerificationResult:
     """Evaluates an OID4VP wallet presentation in strict security precedence order:
 
@@ -102,20 +102,17 @@ def evaluate_wallet_presentation(
 
     normalized_expected_name = _normalize_name(expected_payee_name)
     normalized_pid_name = _normalize_name(payload.pid.full_name)
-    name_parts = normalized_expected_name.split()
-
     if normalized_expected_name != normalized_pid_name:
-        if len(name_parts) != 1 or name_parts[0] != normalized_pid_name.split()[0]:
-            return PayeeVerificationResult(
-                status=VerificationStatus.SUBJECT_MISMATCH,
-                session_id=session_id,
-                actual_pid_name=payload.pid.full_name,
-                actual_iban_owner=iban_attestation.account_holder_name or payload.pid.full_name,
-                reason=(
-                    f"Payee name mismatch: intended recipient was '{expected_payee_name}', "
-                    f"but legal verified identity from EUDI Wallet is '{payload.pid.full_name}'."
-                ),
-            )
+        return PayeeVerificationResult(
+            status=VerificationStatus.SUBJECT_MISMATCH,
+            session_id=session_id,
+            actual_pid_name=payload.pid.full_name,
+            actual_iban_owner=iban_attestation.account_holder_name or payload.pid.full_name,
+            reason=(
+                f"Payee name mismatch: intended recipient was '{expected_payee_name}', "
+                f"but legal verified identity from EUDI Wallet is '{payload.pid.full_name}'."
+            ),
+        )
 
     # Rule 6: Fully Verified
     return PayeeVerificationResult(
@@ -123,6 +120,6 @@ def evaluate_wallet_presentation(
         session_id=session_id,
         verified_name=payload.pid.full_name,
         verified_iban=normalized_presented_iban,
-        issuer_bank=iban_attestation.bank_name or "ING Bank N.V.",
+        issuer_bank=iban_attestation.bank_name or "Demo Issuer Bank",
         reason="EUDI Wallet PID and IBAN ownership attestation cryptographically verified and bound.",
     )

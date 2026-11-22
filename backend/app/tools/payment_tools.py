@@ -1,12 +1,17 @@
-"""Google ADK Tools for EUDI Wallet verification and instant payment execution."""
+"""Google ADK tools and deterministic payment authorization services."""
 
-from typing import Optional
+import datetime
+from typing import Any, MutableMapping, Optional
 from google.adk.tools import ToolContext
+from app.adapters.mock_wallet_api import MockEUWalletApi
 from app.adapters.live_adapters import get_adapters
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.domain.models import (
     PayeeVerificationResult,
+    PaymentAuthorization,
     PaymentExecutionRequest,
+    PaymentIntent,
+    PaymentRiskAssessment,
     VerificationStatus,
 )
 from app.telemetry import get_logger
@@ -19,6 +24,162 @@ def _get_session_id(tool_context: ToolContext) -> str:
     if hasattr(tool_context, "session") and tool_context.session and hasattr(tool_context.session, "id"):
         return tool_context.session.id
     return tool_context.state.get("session_id", "default_session")
+
+
+def assess_payment_risk(
+    intent: PaymentIntent,
+    trusted_favorites: dict[str, str],
+    max_amount: float,
+) -> PaymentRiskAssessment:
+    """Apply server-side favorite policy; user or LLM claims cannot authorize payment."""
+    name = " ".join((intent.recipient_name or "").strip().casefold().split())
+    iban = "".join((intent.recipient_iban or "").upper().split())
+    if not name or intent.amount is None:
+        return PaymentRiskAssessment(
+            route="CLARIFY",
+            recipient_name=intent.recipient_name,
+            recipient_iban=intent.recipient_iban,
+            amount=intent.amount,
+            currency=intent.currency,
+            reason="Recipient and positive amount are required.",
+        )
+
+    favorite_iban = next(
+        (
+            value
+            for favorite_name, value in trusted_favorites.items()
+            if " ".join(favorite_name.strip().casefold().split()) == name
+        ),
+        None,
+    )
+    expected_iban = "".join((favorite_iban or "").upper().split())
+    if favorite_iban and iban == expected_iban and intent.amount <= max_amount:
+        return PaymentRiskAssessment(
+            route="FAST_PATH_APPROVED",
+            recipient_name=intent.recipient_name,
+            recipient_iban=expected_iban,
+            amount=intent.amount,
+            currency=intent.currency,
+            reason="Server-side trusted favorite matched exact IBAN and amount limit.",
+        )
+
+    return PaymentRiskAssessment(
+        route="STEP_UP_REQUIRED",
+        recipient_name=intent.recipient_name,
+        recipient_iban=iban or None,
+        amount=intent.amount,
+        currency=intent.currency,
+        reason="Recipient is new, IBAN differs, or amount exceeds favorite limit.",
+    )
+
+
+async def initiate_payment_intent(
+    intent: PaymentIntent,
+    session_id: str,
+    state: MutableMapping[str, Any],
+    settings: Optional[Settings] = None,
+) -> str:
+    """Resolve a typed intent, enforce risk policy, then verify or execute."""
+    settings = settings or get_settings()
+    name = " ".join((intent.recipient_name or "").split())
+    if not name:
+        return "Who would you like to pay? Please provide the recipient's name."
+    if intent.amount is None or intent.amount <= 0:
+        state["requested_payee"] = name
+        return f"What amount would you like to send to **{name}**?"
+
+    iban = "".join((intent.recipient_iban or "").upper().split())
+    if not iban:
+        favorite_iban = next(
+            (
+                value
+                for favorite_name, value in settings.TRUSTED_FAVORITES.items()
+                if " ".join(favorite_name.strip().casefold().split())
+                == " ".join(name.casefold().split())
+            ),
+            None,
+        )
+        if favorite_iban:
+            iban = "".join(favorite_iban.upper().split())
+        elif settings.ADAPTER_MODE.upper() == "MOCK":
+            try:
+                wallet = MockEUWalletApi().find_wallet_by_name(name)
+                iban = wallet.get("account_iban") or wallet["iban_attestation"].get("iban") or ""
+                name = " ".join((wallet["pid"]["given_name"], wallet["pid"]["family_name"]))
+            except (ValueError, KeyError):
+                return f"I couldn't find a unique recipient named **{name}**. Please provide the full name."
+        if not iban:
+            return f"I couldn't find an account for **{name}**. EUDI verification requires an IBAN known to the bank."
+
+    normalized_intent = PaymentIntent(
+        recipient_name=name,
+        recipient_iban=iban,
+        amount=intent.amount,
+        currency=intent.currency,
+    )
+    risk = assess_payment_risk(
+        normalized_intent,
+        settings.TRUSTED_FAVORITES,
+        settings.FAVORITE_FAST_PATH_MAX_AMOUNT,
+    )
+    state["session_id"] = session_id
+    state["pending_payment"] = {
+        "amount": intent.amount,
+        "creditor_iban": iban,
+        "creditor_name": name,
+        "currency": intent.currency,
+    }
+
+    if risk.route == "FAST_PATH_APPROVED":
+        authorization = PaymentAuthorization(
+            decision="TRUSTED_FAVORITE",
+            session_id=session_id,
+            recipient_name=name,
+            recipient_iban=iban,
+            amount=intent.amount,
+            currency=intent.currency,
+            favorite_name=name,
+            max_amount=settings.FAVORITE_FAST_PATH_MAX_AMOUNT,
+            reason=risk.reason,
+        )
+        state["verification_status"] = VerificationStatus.FAST_PATH_APPROVED.value
+        state["payment_authorization"] = authorization.model_dump(mode="json")
+        if settings.AUTO_EXECUTE_VERIFIED_PAYMENTS:
+            return await _execute_payment_for_state(session_id, state, settings)
+        return f"Trusted recipient confirmed. The €{intent.amount:.2f} payment is ready for authorization."
+
+    verifier, _ = get_adapters(settings)
+    state["verification_status"] = VerificationStatus.PENDING.value
+    state["verified_payee"] = None
+    await verifier.create_dcql_request(
+        session_id=session_id,
+        target_iban=iban,
+        expected_payee_name=name,
+        amount=intent.amount,
+        currency=intent.currency,
+    )
+
+    if (
+        settings.ADAPTER_MODE.upper() == "MOCK"
+        and settings.MOCK_WALLET_AUTO_PRESENT
+        and settings.ALLOW_MOCK_VERIFICATION
+    ):
+        result = await verifier.apply_preset_scenario(session_id, "valid")
+        state["verification_status"] = result.status.value
+        if result.status == VerificationStatus.VERIFIED:
+            state["verified_payee"] = {
+                "name": result.verified_name,
+                "iban": result.verified_iban,
+                "bank": result.issuer_bank,
+            }
+            if settings.AUTO_EXECUTE_VERIFIED_PAYMENTS:
+                return await _execute_payment_for_state(session_id, state, settings)
+        return f"Mock wallet verdict: {result.status.value}. Payment remains blocked until authorization."
+
+    return (
+        f"EUDI verification has been started for **{name}** for €{intent.amount:.2f}. "
+        "The payment will be executed only after the verifier returns a verdict."
+    )
 
 
 async def initiate_payee_eudi_verification(
@@ -40,68 +201,14 @@ async def initiate_payee_eudi_verification(
         tool_context: ADK session context.
     """
     session_id = _get_session_id(tool_context)
-    verifier, _ = get_adapters()
-
-    # Track pending payment details and state in ADK session
-    pending_payment = {
-        "amount": amount,
-        "creditor_iban": creditor_iban.strip(),
-        "creditor_name": creditor_name.strip(),
-        "currency": "EUR",
-    }
-    tool_context.state["session_id"] = session_id
-    tool_context.state["pending_payment"] = pending_payment
-    tool_context.state["verification_status"] = VerificationStatus.PENDING.value
-    tool_context.state["verified_payee"] = None
-
-    dcql_req = await verifier.create_dcql_request(
-        session_id=session_id,
-        target_iban=creditor_iban.strip(),
-        expected_payee_name=creditor_name.strip(),
-        amount=amount,
-        currency="EUR",
-    )
-
-    settings = get_settings()
-    if (
-        settings.ADAPTER_MODE.upper() == "MOCK"
-        and settings.MOCK_WALLET_AUTO_PRESENT
-        and settings.ALLOW_MOCK_VERIFICATION
-    ):
-        try:
-            mock_result = await verifier.apply_preset_scenario(session_id, "valid")
-            tool_context.state["verification_status"] = mock_result.status.value
-            if mock_result.status == VerificationStatus.VERIFIED:
-                tool_context.state["verified_payee"] = {
-                    "name": mock_result.verified_name,
-                    "iban": mock_result.verified_iban,
-                    "bank": mock_result.issuer_bank,
-                }
-                wallet_mode = " | Presentare EUDI mock verificată automat"
-            else:
-                wallet_mode = f" | Mock wallet verdict: {mock_result.status.value}"
-        except Exception:
-            wallet_mode = " | Mock wallet presentation unavailable"
-    else:
-        wallet_mode = ""
-
-    return (
-        "Am înregistrat intenția de plată. În calitate de **Agent de Autorizare ING**, "
-        "am activat protocolul Zero-Trust prin EUDI Wallet pentru a preveni impersonarea, "
-        "fraudele APP și spoofingul de IBAN.\n\n"
-        f"**Intenție confirmată:** {creditor_name} | {creditor_iban} | €{amount:.2f}\n"
-        "Am emis o provocare criptografică OID4VP (DCQL) către portofelul beneficiarului. "
-        "Această solicitare cere prezentarea PID eIDAS și a atestării bancare de proprietate asupra IBAN.\n\n"
-        f"- **Verification Request ID:** `{dcql_req.request_id}`\n"
-        f"- **Session ID:** `{session_id}`\n"
-        f"- **Verdict EUDI:** {tool_context.state.get('verification_status')}\n"
-        f"- **OID4VP Deep Link:** {dcql_req.qr_code_uri}{wallet_mode}\n\n"
-        "Verificarea este realizată automat pentru mockul local. În LIVE, portofelul EUDI trebuie să prezinte "
-        "credentialele înainte ca verdictul să fie fetch-uit și validat.\n"
-        "Beneficiarul trebuie să prezinte portofelul EUDI. Apoi spuneți „Verifică statusul acum”. "
-        "Nicio plată nu poate fi executată până la verificarea criptografică externă.\n"
-        f"Simulator wallet: `POST http://localhost:8080/mock-wallet/{session_id}/preset/valid`\n\n"
-        "EUDI Wallet verification challenge initiated."
+    return await initiate_payment_intent(
+        PaymentIntent(
+            recipient_name=creditor_name,
+            recipient_iban=creditor_iban,
+            amount=amount,
+        ),
+        session_id,
+        tool_context.state,
     )
 
 
@@ -139,16 +246,16 @@ async def check_payee_eudi_verification(tool_context: ToolContext) -> str:
 
         settings = get_settings()
         report = (
-            "🛡️ **Raport de Evaluare și Autorizare EUDI**\n\n"
-            "Identitatea și dreptul de proprietate asupra contului au fost verificate criptografic:\n\n"
-            f"- **Titular legal verificat (PID eIDAS):** {result.verified_name}\n"
-            f"- **Cont IBAN atestat:** `{result.verified_iban}` (Banca emitentă: {result.issuer_bank})\n"
+            "🛡️ **EUDI Verification and Authorization Report**\n\n"
+            "Identity and account ownership were cryptographically verified:\n\n"
+            f"- **Verified legal name (eIDAS PID):** {result.verified_name}\n"
+            f"- **Attested IBAN:** `{result.verified_iban}` (Issuing bank: {result.issuer_bank})\n"
             "- **Subject Binding Check (`PID.sub == IBAN.sub`):** **CONFORM** — "
-            "titularul actului de identitate este identicul titularului legal al contului\n"
-            "- **Scor de Risc APP Fraud:** **0%** — fără indicii de cont mule sau IBAN spoofing\n"
-            "- **Verdict Autorizare:** **AUTORIZAT**\n"
-            f"- **Sursa verificării:** `{result.mode.upper()}`"
-            + (" — rezultat sintetic, nu dovadă criptografică de producție" if result.mode == "mock" else "")
+            "the identity-document holder matches the legal account holder\n"
+            "- **APP fraud risk score:** **0%** — no indicators of a money-mule account or IBAN spoofing\n"
+            "- **Authorization verdict:** **AUTHORIZED**\n"
+            f"- **Verification source:** `{result.mode.upper()}`"
+            + (" — synthetic result, not production cryptographic evidence" if result.mode == "mock" else "")
             + "\n\n"
             "Payee verification SUCCESSFUL!\n\n"
         )
@@ -156,15 +263,15 @@ async def check_payee_eudi_verification(tool_context: ToolContext) -> str:
         if not settings.AUTO_EXECUTE_VERIFIED_PAYMENTS:
             return (
                 report
-                + f"Fondurile de €{float(pending_payment.get('amount', 0)):,.2f} sunt pregătite "
-                "pentru transfer instant către destinatarul verificat. Doriți să execut transferul SEPA Instant?"
+                + f"The funds of €{float(pending_payment.get('amount', 0)):,.2f} are ready "
+                "for an instant transfer to the verified recipient. Would you like to execute the SEPA Instant transfer?"
             )
 
         execution_reply = await execute_verified_instant_payment(tool_context=tool_context)  # type: ignore[arg-type]
         return (
             report
-            + "⚡ **Execuție automată autorizată:** după verdictul `VERIFIED`, plata a fost trimisă automat în "
-            "SEPA Instant, fără solicitarea unei confirmări suplimentare.\n\n"
+            + "⚡ **Automatic execution authorized:** following the `VERIFIED` verdict, the payment was sent via "
+            "SEPA Instant without requesting additional confirmation.\n\n"
             + execution_reply
         )
 
@@ -184,15 +291,15 @@ async def check_payee_eudi_verification(tool_context: ToolContext) -> str:
         )
 
         return (
-            "🚨 **ALERTA CRITICĂ: PLATA A FOST BLOCATĂ DE AGENTUL DE AUTORIZARE!**\n\n"
-            "În urma interogării externe EUDI Wallet, am detectat o discrepanță gravă de securitate:\n\n"
-            f"- Intenția ta a fost să trimiți banii către **{expected_name}**.\n"
-            f"- Titularul real al actului de identitate prezentat este **{actual_name}**; "
-            f"contul bancar este înregistrat pe numele **{actual_owner}**.\n\n"
-            "⚠️ **Subject Binding Violation / SUBJECT MISMATCH:** atestarea bancară nu aparține persoanei pretinse. "
-            "Acesta este un indicator clar de **Authorised Push Payment (APP) Fraud / Cont Mule**.\n\n"
-            "⛔ **Decizie Agent:** **BLOCARE PERMANENTĂ A TRANZACȚIEI**. "
-            "Nicio sumă nu a fost retrasă din contul tău.\n\n"
+            "🚨 **CRITICAL ALERT: PAYMENT BLOCKED BY THE AUTHORIZATION AGENT!**\n\n"
+            "The external EUDI Wallet check detected a serious security discrepancy:\n\n"
+            f"- You intended to send money to **{expected_name}**.\n"
+            f"- The actual holder of the presented identity document is **{actual_name}**; "
+            f"the bank account is registered to **{actual_owner}**.\n\n"
+            "⚠️ **Subject Binding Violation / SUBJECT MISMATCH:** the bank attestation does not belong to the claimed person. "
+            "This is a clear indicator of **Authorised Push Payment (APP) fraud / money-mule activity**.\n\n"
+            "⛔ **Agent decision:** **PERMANENT PAYMENT BLOCK**. "
+            "No funds have been withdrawn from your account.\n\n"
             "SECURITY ALERT: SUBJECT MISMATCH"
         )
 
@@ -203,7 +310,13 @@ async def check_payee_eudi_verification(tool_context: ToolContext) -> str:
         )
 
     elif result.status == VerificationStatus.RECOVERY_REQUIRED:
-        recovery_url = result.recovery_issuer_url or "https://bank.ing.com/wallet-issuance/iban-attestation"
+        recovery_url = result.recovery_issuer_url or "https://issuer.example.com/attestations/iban"
+        if result.mode == "mock":
+            return (
+                "Verification is incomplete: the payee has a valid EUDI PID, but the wallet is missing an active "
+                "IBAN account-ownership attestation. This demo simulates the bank issuer's recovery step. "
+                "After the attestation is issued, check verification again."
+            )
         return (
             f"Verification INCOMPLETE (RECOVERY REQUIRED):\n"
             f"The payee presented a valid EUDI PID, but their wallet is missing an active IBAN Account Ownership Attestation.\n"
@@ -220,18 +333,71 @@ async def check_payee_eudi_verification(tool_context: ToolContext) -> str:
     return f"Verification status: {result.status.value}. Reason: {result.reason}"
 
 
-async def execute_verified_instant_payment(tool_context: ToolContext) -> str:
-    """Executes an instant SEPA payment for the verified payee.
+async def check_payment_verification(
+    session_id: str,
+    state: MutableMapping[str, Any],
+    settings: Optional[Settings] = None,
+) -> str:
+    """Poll verifier through backend service without constructing a fake ADK context."""
+    settings = settings or get_settings()
+    pending = state.get("pending_payment")
+    if not pending:
+        return "No pending payment found in session. Please initiate a payment first."
 
-    STRICT GUARDRAIL: Refuses execution unless session.state['verification_status'] == 'VERIFIED'.
-    Upon success, issues an OID4VCI PaymentReceipt verifiable credential.
-    """
-    session_id = _get_session_id(tool_context)
-    current_status = tool_context.state.get("verification_status")
-    pending = tool_context.state.get("pending_payment")
+    verifier, _ = get_adapters(settings)
+    result = await verifier.get_verification_result(session_id)
+    if result is None:
+        state["verification_status"] = VerificationStatus.PENDING.value
+        return "Verification is still PENDING. The payee has not yet presented EUDI credentials."
 
-    # Code-level Guardrail Check
-    if current_status != VerificationStatus.VERIFIED.value:
+    state["verification_status"] = result.status.value
+    if result.status == VerificationStatus.VERIFIED:
+        state["verified_payee"] = {
+            "name": result.verified_name,
+            "iban": result.verified_iban,
+            "bank": result.issuer_bank,
+        }
+        if settings.AUTO_EXECUTE_VERIFIED_PAYMENTS:
+            execution_reply = await _execute_payment_for_state(session_id, state, settings)
+            return (
+                "Payee verification SUCCESSFUL\n\n"
+                "Automatic execution authorized after the VERIFIED verdict.\n\n"
+                + execution_reply
+            )
+        return "Payee verification SUCCESSFUL. Payment awaits explicit execution."
+    if result.status in (VerificationStatus.REJECTED, VerificationStatus.SUBJECT_MISMATCH):
+        return (
+            "SECURITY ALERT: SUBJECT MISMATCH\n"
+            f"Expected: {pending.get('creditor_name')}; presented holder: "
+            f"{result.actual_pid_name or 'Unknown'} / {result.actual_iban_owner or 'Unknown'}.\n"
+            "PERMANENT PAYMENT BLOCK."
+        )
+    if result.status == VerificationStatus.RECOVERY_REQUIRED:
+        if result.mode == "mock":
+            return (
+                "Verification is incomplete: the payee has a valid EUDI PID, but the wallet is missing an active "
+                "IBAN account-ownership attestation. This demo simulates the bank issuer's recovery step. "
+                "After the attestation is issued, check verification again."
+            )
+        recovery_url = result.recovery_issuer_url or settings.RECOVERY_ISSUER_URL
+        return (
+            "Verification is incomplete: the payee has a valid EUDI PID, but the wallet is missing an active "
+            f"IBAN account-ownership attestation. The payee must request one from their issuing bank: {recovery_url}. "
+            "After it is issued, check verification again."
+        )
+    return f"Verification status: {result.status.value}. Reason: {result.reason}"
+
+
+async def _execute_payment_for_state(
+    session_id: str,
+    state: MutableMapping[str, Any],
+    settings: Optional[Settings] = None,
+) -> str:
+    """Execute only after backend revalidates exact payment authorization."""
+    settings = settings or get_settings()
+    current_status = state.get("verification_status")
+    pending = state.get("pending_payment")
+    if current_status not in (VerificationStatus.VERIFIED.value, VerificationStatus.FAST_PATH_APPROVED.value):
         logger.log_event(
             severity="ERROR",
             message=f"Guardrail violation: Blocked unverified payment execution for session {session_id}",
@@ -241,29 +407,90 @@ async def execute_verified_instant_payment(tool_context: ToolContext) -> str:
             pending_payment=pending,
         )
         return (
-            "🚫 **AUTORIZARE REFUZATĂ — EXECUȚIE BLOCATĂ**\n\n"
-            "Agentul de Autorizare nu permite interacțiunea cu rețeaua bancară deoarece "
-            f"statusul EUDI este **`{current_status}`**. Pentru execuție este obligatoriu `VERIFIED`.\n\n"
-            "BLOCARE PERMANENTĂ până la verificarea criptografică validă. "
+            "🚫 **AUTHORIZATION REFUSED — EXECUTION BLOCKED**\n\n"
+            "The Authorization Agent cannot access the banking network because "
+            f"the EUDI status is **`{current_status}`**. A `VERIFIED` status is required for execution.\n\n"
+            "PERMANENT BLOCK until valid cryptographic verification is completed. "
             "EXECUTION BLOCKED: Guardrail violation."
         )
 
     if not pending:
         return "EXECUTION ERROR: No pending payment details found in session."
 
-    _, core_banking = get_adapters()
-    verifier, _ = get_adapters()
-
-    verification_result = await verifier.get_verification_result(session_id)
-    if not verification_result or verification_result.status != VerificationStatus.VERIFIED:
-        return "EXECUTION BLOCKED: Verification record missing or invalid."
-
-    settings = get_settings()
-    if verification_result.mode == "mock" and not settings.ALLOW_MOCK_VERIFICATION:
-        return "EXECUTION BLOCKED: Mock verification is not allowed in this environment."
-
-    if verification_result.mode == "mock" and settings.ADAPTER_MODE.upper() == "LIVE":
-        return "EXECUTION BLOCKED: Mock verification cannot authorize a LIVE payment."
+    verification_result: Optional[PayeeVerificationResult] = None
+    if current_status == VerificationStatus.FAST_PATH_APPROVED.value:
+        stored = state.get("payment_authorization") or {}
+        intent = PaymentIntent(
+            recipient_name=pending.get("creditor_name"),
+            recipient_iban=pending.get("creditor_iban"),
+            amount=float(pending.get("amount", 0)),
+            currency=pending.get("currency", "EUR"),
+        )
+        risk = assess_payment_risk(
+            intent,
+            settings.TRUSTED_FAVORITES,
+            settings.FAVORITE_FAST_PATH_MAX_AMOUNT,
+        )
+        if (
+            risk.route != "FAST_PATH_APPROVED"
+            or stored.get("decision") != "TRUSTED_FAVORITE"
+            or stored.get("session_id") != session_id
+            or stored.get("recipient_iban") != risk.recipient_iban
+            or stored.get("recipient_name", "").casefold() != (pending.get("creditor_name") or "").casefold()
+            or stored.get("favorite_name", "").casefold() != (pending.get("creditor_name") or "").casefold()
+            or float(stored.get("amount", 0)) != intent.amount
+            or float(stored.get("max_amount", 0)) != settings.FAVORITE_FAST_PATH_MAX_AMOUNT
+            or stored.get("currency", "EUR") != intent.currency
+        ):
+            return "EXECUTION BLOCKED: Trusted-favorite authorization is missing, stale, or mismatched."
+        authorization = PaymentAuthorization.model_validate(stored)
+    else:
+        verifier, _ = get_adapters(settings)
+        verification_result = await verifier.get_verification_result(session_id)
+        if not verification_result or verification_result.status != VerificationStatus.VERIFIED:
+            return "EXECUTION BLOCKED: Verification record missing or invalid."
+        if verification_result.session_id != session_id:
+            return "EXECUTION BLOCKED: Verification belongs to a different session."
+        dcql_request = await verifier.get_dcql_request(session_id)
+        if (
+            dcql_request is None
+            or dcql_request.session_id != session_id
+            or dcql_request.target_iban.replace(" ", "").upper()
+            != pending["creditor_iban"].replace(" ", "").upper()
+            or dcql_request.amount != float(pending["amount"])
+            or " ".join(dcql_request.expected_payee_name.casefold().split())
+            != " ".join(pending["creditor_name"].casefold().split())
+        ):
+            return "EXECUTION BLOCKED: Verification request does not match pending payment."
+        if verification_result.verified_at is None:
+            return "EXECUTION BLOCKED: Verification timestamp is missing."
+        now = datetime.datetime.now(datetime.timezone.utc)
+        verified_at = verification_result.verified_at
+        if verified_at.tzinfo is None:
+            verified_at = verified_at.replace(tzinfo=datetime.timezone.utc)
+        age_seconds = (now - verified_at).total_seconds()
+        if age_seconds < 0 or age_seconds > settings.VERIFICATION_MAX_AGE_SECONDS:
+            return "EXECUTION BLOCKED: Verification result is stale."
+        if not verification_result.verification_id:
+            return "EXECUTION BLOCKED: Verification identifier is missing."
+        if (
+            verification_result.verified_iban or ""
+        ).replace(" ", "").upper() != pending["creditor_iban"].replace(" ", "").upper():
+            return "EXECUTION BLOCKED: Verified IBAN does not match pending payment."
+        if verification_result.mode == "mock" and not settings.ALLOW_MOCK_VERIFICATION:
+            return "EXECUTION BLOCKED: Mock verification is not allowed in this environment."
+        if verification_result.mode == "mock" and settings.ADAPTER_MODE.upper() == "LIVE":
+            return "EXECUTION BLOCKED: Mock verification cannot authorize a LIVE payment."
+        authorization = PaymentAuthorization(
+            decision="EUDI_VERIFIED",
+            session_id=session_id,
+            recipient_name=pending["creditor_name"],
+            recipient_iban=pending["creditor_iban"],
+            amount=float(pending["amount"]),
+            currency=pending.get("currency", "EUR"),
+            verification_id=verification_result.verification_id,
+            reason="External verifier returned VERIFIED for the pending payment.",
+        )
 
     payment_request = PaymentExecutionRequest(
         session_id=session_id,
@@ -274,28 +501,78 @@ async def execute_verified_instant_payment(tool_context: ToolContext) -> str:
         currency=pending.get("currency", "EUR"),
         reference=f"Conversational Payment to {pending['creditor_name']}",
     )
-
+    _, core_banking = get_adapters(settings)
     receipt = await core_banking.execute_instant_payment(
         payment_request=payment_request,
+        authorization=authorization,
         verification=verification_result,
     )
 
-    # Update session state to COMPLETED
-    tool_context.state["verification_status"] = VerificationStatus.COMPLETED.value
-    tool_context.state["last_receipt_id"] = receipt.credential_id
-    tool_context.state["transaction_id"] = receipt.transaction_id
-
+    state["verification_status"] = VerificationStatus.COMPLETED.value
+    state["last_receipt_id"] = receipt.credential_id
+    state["transaction_id"] = receipt.transaction_id
     return (
-        "Plata a fost executată instantaneu de către rețeaua bancară!\n\n"
-        f"- **Beneficiar:** {receipt.creditor_name}\n"
+        "Payment was executed instantly by the banking network!\n\n"
+        f"- **Recipient:** {receipt.creditor_name}\n"
         f"- **IBAN:** `{receipt.creditor_iban}`\n"
-        f"- **Sumă:** €{receipt.amount:.2f}\n"
-        f"- **ID Tranzacție SEPA:** `{receipt.transaction_id}`\n"
-        f"- **Chitanță Verificabilă (OID4VCI):** `{receipt.credential_id}`\n"
+        f"- **Amount:** €{receipt.amount:.2f}\n"
+        f"- **SEPA transaction ID:** `{receipt.transaction_id}`\n"
+        f"- **Verifiable receipt (OID4VCI):** `{receipt.credential_id}`\n"
         f"- **Issuer DID:** `{receipt.issuer_did}`\n"
-        f"- **Semnătură criptografică:** `{receipt.issuer_signature[:30]}...`\n\n"
-        "Am emis și semnat criptografic dovada Verifiable Credential; "
-        "chitanța a fost transmisă portofelului EUDI ca dovadă irevocabilă a plății.\n"
+        f"- **Cryptographic signature:** `{receipt.issuer_signature[:30]}...`\n\n"
+        "A Verifiable Credential payment receipt was issued and cryptographically signed; "
+        "it was sent to the EUDI Wallet as an irrevocable proof of payment.\n"
         f"Payment of €{receipt.amount:.2f} to {receipt.creditor_name} ({receipt.creditor_iban}) "
         "executed successfully via SEPA Instant!"
     )
+
+
+async def execute_verified_instant_payment(tool_context: ToolContext) -> str:
+    """Execute only when backend state has valid EUDI or favorite authorization."""
+    return await _execute_payment_for_state(
+        _get_session_id(tool_context),
+        tool_context.state,
+    )
+
+
+async def evaluate_payment_risk(
+    recipient_name: Optional[str],
+    recipient_iban: Optional[str],
+    amount: Optional[float],
+    tool_context: ToolContext,
+) -> str:
+    """Evaluates server-configured favorites; LLM output cannot create favorites."""
+    settings = get_settings()
+    risk = assess_payment_risk(
+        PaymentIntent(
+            recipient_name=recipient_name,
+            recipient_iban=recipient_iban,
+            amount=amount,
+        ),
+        settings.TRUSTED_FAVORITES,
+        settings.FAVORITE_FAST_PATH_MAX_AMOUNT,
+    )
+    if risk.route == "CLARIFY":
+        return f"CLARIFY: {risk.reason}"
+
+    session_id = _get_session_id(tool_context)
+    tool_context.state["session_id"] = session_id
+    tool_context.state["pending_payment"] = {
+        "amount": amount,
+        "creditor_iban": risk.recipient_iban,
+        "creditor_name": recipient_name,
+        "currency": "EUR",
+    }
+    tool_context.state["verification_status"] = risk.route
+    if risk.route == "FAST_PATH_APPROVED":
+        tool_context.state["payment_authorization"] = PaymentAuthorization(
+            decision="TRUSTED_FAVORITE",
+            session_id=session_id,
+            recipient_name=recipient_name or "",
+            recipient_iban=risk.recipient_iban or "",
+            amount=amount or 0,
+            favorite_name=recipient_name,
+            max_amount=settings.FAVORITE_FAST_PATH_MAX_AMOUNT,
+            reason=risk.reason,
+        ).model_dump(mode="json")
+    return risk.route

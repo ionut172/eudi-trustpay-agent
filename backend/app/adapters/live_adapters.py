@@ -8,6 +8,7 @@ from app.config import Settings, get_settings
 from app.domain.models import (
     DCQLRequest,
     PayeeVerificationResult,
+    PaymentAuthorization,
     PaymentExecutionRequest,
     PaymentReceiptVC,
     WalletPresentationPayload,
@@ -99,12 +100,14 @@ class LiveCoreBankingAdapter(ICoreBankingPort):
     async def execute_instant_payment(
         self,
         payment_request: PaymentExecutionRequest,
-        verification: PayeeVerificationResult,
+        authorization: PaymentAuthorization,
+        verification: Optional[PayeeVerificationResult] = None,
     ) -> PaymentReceiptVC:
         url = f"{self.base_url}/api/v1/payments/instant-sepa"
         payload = {
             "payment": payment_request.model_dump(mode="json"),
-            "verification": verification.model_dump(mode="json"),
+            "authorization": authorization.model_dump(mode="json"),
+            "verification": verification.model_dump(mode="json") if verification else None,
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.post(url, json=payload)

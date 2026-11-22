@@ -12,6 +12,7 @@ from app.domain.models import (
     DCQLRequest,
     IBANAttestationCredential,
     PayeeVerificationResult,
+    PaymentAuthorization,
     PaymentExecutionRequest,
     PaymentReceiptVC,
     PIDCredential,
@@ -53,7 +54,7 @@ def _write_persistent_state(data: dict) -> None:
 class MockEUDIVerifierAdapter(IEUDIVerifierPort):
     """OID4VP Verifier simulator with cross-process persistence for DCQL and presets."""
 
-    def __init__(self, recovery_issuer_url: str = "https://bank.ing.com/wallet-issuance/iban-attestation"):
+    def __init__(self, recovery_issuer_url: str = "https://issuer.example.com/attestations/iban"):
         self.recovery_issuer_url = recovery_issuer_url
         self._requests: dict[str, DCQLRequest] = {}
         self._presentations: dict[str, WalletPresentationPayload] = {}
@@ -99,7 +100,7 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
         self._sync_from_disk()
         request_id = f"dcql-{uuid.uuid4().hex[:12]}"
         nonce = secrets.token_urlsafe(16)
-        verifier_callback_url = f"https://verifier.eudi.ing.com/api/v1/sessions/{session_id}/presentation"
+        verifier_callback_url = f"https://verifier.example.com/api/v1/sessions/{session_id}/presentation"
 
         # DCQL query asking for EU PID and bank-issued IBAN attestation
         dcql_query = {
@@ -120,7 +121,7 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
         }
 
         qr_code_uri = (
-            f"openid4vp://?client_id=https://verifier.eudi.ing.com&request_uri={verifier_callback_url}"
+            f"openid4vp://?client_id=https://verifier.example.com&request_uri={verifier_callback_url}"
             f"&response_type=vp_token&nonce={nonce}"
         )
 
@@ -137,6 +138,10 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
             qr_code_uri=qr_code_uri,
         )
 
+        # A session may initiate another payment. Never let a prior presentation or
+        # verdict authorize the new request.
+        self._presentations.pop(session_id, None)
+        self._results.pop(session_id, None)
         self._requests[session_id] = req
         self._persist_to_disk()
 
@@ -254,7 +259,7 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
             sub=pid.sub,
             iban=target_iban,
             account_holder_name=pid.full_name,
-            bank_name="ING Bank N.V.",
+            bank_name="Demo Issuer Bank",
             is_valid=True,
             is_expired=False,
         )
@@ -272,6 +277,10 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
             expected_payee_name=expected_name,
             recovery_issuer_url=self.recovery_issuer_url,
         )
+        result.verification_id = f"ver_test_{session_id}"
+        result.mode = "mock"
+        if result.status == VerificationStatus.VERIFIED:
+            result.verified_at = datetime.datetime.now(datetime.timezone.utc)
         self._results[session_id] = result
         self._persist_to_disk()
 
@@ -341,20 +350,48 @@ class MockCoreBankingAdapter(ICoreBankingPort):
     async def execute_instant_payment(
         self,
         payment_request: PaymentExecutionRequest,
-        verification: PayeeVerificationResult,
+        authorization: PaymentAuthorization,
+        verification: Optional[PayeeVerificationResult] = None,
     ) -> PaymentReceiptVC:
         self._sync_from_disk()
         session_id = payment_request.session_id
 
-        if verification.status != VerificationStatus.VERIFIED:
-            raise ValueError(
-                f"Core banking refused execution: payee status is '{verification.status.value}', not 'VERIFIED'."
-            )
+        payment_matches_authorization = (
+            authorization.session_id == session_id
+            and authorization.recipient_iban.replace(" ", "").upper()
+            == payment_request.creditor_iban.replace(" ", "").upper()
+            and authorization.recipient_name.strip().casefold()
+            == payment_request.creditor_name.strip().casefold()
+            and authorization.amount == payment_request.amount
+            and authorization.currency == payment_request.currency
+        )
+        if not payment_matches_authorization:
+            raise ValueError("Core banking refused execution: authorization does not match payment details.")
+
+        if authorization.decision == "EUDI_VERIFIED":
+            if (
+                verification is None
+                or verification.status != VerificationStatus.VERIFIED
+                or authorization.verification_id != verification.verification_id
+                or (verification.verified_iban or "").replace(" ", "").upper()
+                != authorization.recipient_iban.replace(" ", "").upper()
+            ):
+                raise ValueError("Core banking refused execution: verified EUDI record is missing or unbound.")
+        elif authorization.decision == "TRUSTED_FAVORITE":
+            if (
+                verification is not None
+                or not authorization.favorite_name
+                or authorization.favorite_name.strip().casefold()
+                != authorization.recipient_name.strip().casefold()
+                or authorization.max_amount is None
+                or payment_request.amount > authorization.max_amount
+            ):
+                raise ValueError("Core banking refused execution: trusted-favorite authorization is invalid.")
 
         transaction_id = f"TX-SEPA-INSTANT-{uuid.uuid4().hex[:12].upper()}"
         credential_id = f"urn:uuid:{uuid.uuid4()}"
         now = datetime.datetime.now(datetime.timezone.utc)
-        simulated_signature = f"rsa-sha256:signed:ing-mock-keystore:{secrets.token_hex(32)}"
+        simulated_signature = f"rsa-sha256:signed:demo-mock-keystore:{secrets.token_hex(32)}"
 
         receipt = PaymentReceiptVC(
             credential_id=credential_id,
@@ -367,7 +404,7 @@ class MockCoreBankingAdapter(ICoreBankingPort):
             creditor_name=payment_request.creditor_name,
             status="EXECUTED",
             timestamp=now,
-            issuer_did="did:web:bank.ing.com",
+            issuer_did="did:web:issuer.example.com",
             issuer_signature=simulated_signature,
         )
 
