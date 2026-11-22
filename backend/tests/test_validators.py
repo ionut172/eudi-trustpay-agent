@@ -27,7 +27,7 @@ def valid_iban_attestation() -> IBANAttestationCredential:
         sub="urn:eu:pid:NL-12345678",
         iban="NL91INGB0001234567",
         account_holder_name="Alice Visser",
-        bank_name="ING Bank N.V.",
+        bank_name="Demo Issuer Bank",
         is_valid=True,
         is_expired=False,
     )
@@ -53,7 +53,7 @@ def test_happy_path_verified(
     assert result.status == VerificationStatus.VERIFIED
     assert result.verified_name == "Alice Visser"
     assert result.verified_iban == "NL91INGB0001234567"
-    assert result.issuer_bank == "ING Bank N.V."
+    assert result.issuer_bank == "Demo Issuer Bank"
 
 
 def test_pid_cryptographic_trust_error(
@@ -210,6 +210,26 @@ def test_expected_name_differs_from_pid_full_name(
     assert result.status == VerificationStatus.SUBJECT_MISMATCH
     assert result.actual_pid_name == "Alice Visser"
     assert "Payee name mismatch" in (result.reason or "")
+
+
+def test_first_name_only_does_not_match_verified_full_name(
+    valid_pid: PIDCredential,
+    valid_iban_attestation: IBANAttestationCredential,
+) -> None:
+    payload = WalletPresentationPayload(
+        session_id="session-test-first-name-only",
+        pid=valid_pid,
+        iban_attestation=valid_iban_attestation,
+    )
+
+    result = evaluate_wallet_presentation(
+        payload=payload,
+        expected_iban="NL91INGB0001234567",
+        expected_payee_name="Alice",
+    )
+
+    assert result.status == VerificationStatus.SUBJECT_MISMATCH
+    assert result.actual_pid_name == "Alice Visser"
 
 
 def test_iban_and_name_normalization_case_and_whitespace(

@@ -1,4 +1,4 @@
-"""FastAPI application for ING EUDI Wallet Conversational Payments."""
+"""FastAPI application for the EUDI conversational payments prototype."""
 
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator, List
@@ -12,6 +12,7 @@ from app.domain.models import (
     ChatRequest,
     ChatResponse,
     PayeeVerificationResult,
+    PaymentIntentRequest,
     PaymentReceiptVC,
     VerificationStatus,
     WalletPresentationPayload,
@@ -27,7 +28,7 @@ logger = get_logger("main")
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup and shutdown lifecycle handler."""
     logger.info(
-        "Starting ING EUDI Conversational Payments Service",
+        "Starting conversational payments service",
         adapter_mode=settings.ADAPTER_MODE,
         port=settings.PORT,
         model=settings.MODEL_NAME,
@@ -36,11 +37,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     get_adapters(settings)
     get_orchestrator(settings)
     yield
-    logger.info("Shutting down ING EUDI Conversational Payments Service")
+    logger.info("Shutting down conversational payments service")
 
 
 app = FastAPI(
-    title="ING EUDI Wallet Conversational Payments API",
+    title="EUDI Conversational Payments API",
     description="Conversational banking payments secured by EUDI Wallet verification (OID4VP / DCQL / OID4VCI)",
     version="1.0.0",
     lifespan=lifespan,
@@ -98,6 +99,34 @@ async def chat(request: ChatRequest) -> ChatResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chat processing failed: {str(e)}",
         )
+
+
+@app.post("/api/payment-intents", response_model=ChatResponse, tags=["Conversational Payments"])
+async def submit_payment_intent(request: PaymentIntentRequest) -> ChatResponse:
+    """Accepts structured intent when conversational LLM extraction is unavailable."""
+    orchestrator = get_orchestrator(settings)
+    reply, state = await orchestrator.process_intent(
+        session_id=request.session_id,
+        user_id=request.user_id,
+        intent=request.intent,
+    )
+    return ChatResponse(session_id=request.session_id, reply=reply, state=state)
+
+
+@app.post("/api/payments/{session_id}/verification", response_model=ChatResponse, tags=["Conversational Payments"])
+async def check_payment_status(session_id: str, user_id: str = "user-1") -> ChatResponse:
+    """Checks external verifier status and follows configured execution policy."""
+    orchestrator = get_orchestrator(settings)
+    reply, state = await orchestrator.check_verification(session_id, user_id)
+    return ChatResponse(session_id=session_id, reply=reply, state=state)
+
+
+@app.post("/api/payments/{session_id}/execute", response_model=ChatResponse, tags=["Conversational Payments"])
+async def execute_payment(session_id: str, user_id: str = "user-1") -> ChatResponse:
+    """Attempts payment execution; backend authorization guard remains authoritative."""
+    orchestrator = get_orchestrator(settings)
+    reply, state = await orchestrator.execute_payment(session_id, user_id)
+    return ChatResponse(session_id=session_id, reply=reply, state=state)
 
 
 # --- Mock EUDI Wallet Simulator Endpoints ---
@@ -197,11 +226,19 @@ async def list_mock_wallets() -> dict[str, Any]:
 async def present_mock_wallet(wallet_id: str, session_id: str) -> PayeeVerificationResult:
     """Fetches credentials from the JSON fixture and submits them to the verifier."""
     wallet_api = MockEUWalletApi()
+    verifier, _ = get_adapters(settings)
+    request = await verifier.get_dcql_request(session_id)
+    if request is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No active wallet request exists for this session.",
+        )
     payload = await wallet_api.fetch_wallet_presentation(
         session_id=session_id,
         wallet_id=wallet_id,
+        target_iban=request.target_iban,
     )
-    verifier, _ = get_adapters(settings)
+    payload.nonce = request.nonce
     result = await verifier.submit_wallet_presentation(session_id=session_id, payload=payload)
     await _sync_adk_session_verification(session_id, result)
     return result

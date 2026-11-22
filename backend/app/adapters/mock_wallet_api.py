@@ -28,6 +28,48 @@ class MockEUWalletApi:
     def list_wallet_ids(self) -> list[str]:
         return sorted(self._wallets)
 
+    def find_wallet_by_name(self, name: str) -> dict:
+        """Resolves a known beneficiary name to its wallet fixture and IBAN."""
+        normalized_name = " ".join(name.strip().lower().split())
+        exact_matches = []
+        first_name_matches = []
+        for wallet in self._wallets.values():
+            pid = wallet["pid"]
+            full_name = " ".join(
+                [pid["given_name"].strip(), pid["family_name"].strip()]
+            ).lower()
+            first_name = pid["given_name"].strip().lower()
+            if normalized_name == full_name:
+                exact_matches.append(wallet)
+            elif normalized_name == first_name:
+                first_name_matches.append(wallet)
+
+        matches = exact_matches or first_name_matches
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValueError(f"Ambiguous payee name '{name}'")
+
+        raise ValueError(f"Unknown payee '{name}'")
+
+    def find_wallet_for_intent(self, expected_name: str, target_iban: str) -> dict:
+        """Finds a fixture by both legal name and IBAN; names alone are ambiguous."""
+        normalized_name = " ".join(expected_name.strip().lower().split())
+        normalized_iban = "".join(target_iban.upper().split())
+
+        for wallet in self._wallets.values():
+            pid = wallet["pid"]
+            full_name = " ".join(
+                [pid["given_name"].strip(), pid["family_name"].strip()]
+            ).lower()
+            attestation = wallet["iban_attestation"]
+            account_iban = (wallet.get("account_iban") or "").replace(" ", "").upper()
+            attested_iban = (attestation.get("iban") or "").replace(" ", "").upper()
+            if full_name == normalized_name and normalized_iban in (account_iban, attested_iban):
+                return wallet
+
+        raise ValueError("No exact mock wallet matches name and IBAN")
+
     async def fetch_wallet_presentation(
         self,
         session_id: str,
@@ -69,7 +111,7 @@ class MockEUWalletApi:
                     sub="urn:eu:pid:NL-99999999",
                     iban=target_iban,
                     account_holder_name="Bob Mule",
-                    bank_name="ING Bank N.V.",
+                    bank_name="Demo Issuer Bank",
                     is_valid=True,
                     is_expired=False,
                 ),
@@ -99,10 +141,29 @@ class MockEUWalletApi:
 
         wallet_id = expected_name.strip().lower().split()[0]
         try:
-            return await self.fetch_wallet_presentation(
+            wallet = self.find_wallet_for_intent(expected_name, target_iban)
+            pid = PIDCredential.model_validate(wallet["pid"])
+            attestation = IBANAttestationCredential.model_validate(wallet["iban_attestation"])
+            return WalletPresentationPayload(
                 session_id=session_id,
-                wallet_id=wallet_id,
-                target_iban=target_iban,
+                pid=pid,
+                iban_attestation=attestation,
             )
         except ValueError:
-            raise ValueError("No mock wallet fixture matches the expected payee")
+            return WalletPresentationPayload(
+                session_id=session_id,
+                pid=PIDCredential(
+                    sub="urn:eu:pid:UNKNOWN-00000000",
+                    given_name="Unknown",
+                    family_name="Payee",
+                    is_valid=True,
+                ),
+                iban_attestation=IBANAttestationCredential(
+                    sub="urn:eu:pid:OTHER-00000000",
+                    iban=target_iban,
+                    account_holder_name="Unverified Account Holder",
+                    bank_name="Unknown Bank",
+                    is_valid=True,
+                    is_expired=False,
+                ),
+            )

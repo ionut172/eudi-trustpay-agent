@@ -1,7 +1,7 @@
 [project]
-name = "ing-eudi-payments-backend"
+name = "eudi-conversational-payments-backend"
 version = "0.1.0"
-description = "ING EUDI Wallet Conversational Payments Backend with Google ADK"
+description = "EUDI Wallet Conversational Payments Backend with Google ADK"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

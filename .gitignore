@@ -6,6 +6,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.github/
 
 # Environment secrets
 .env
@@ -14,6 +15,7 @@ __pycache__/
 backend/.env
 backend/.env.*
 !backend/.env.example
+!frontend/.env.example
 
 # Credentials and private keys
 *.pem
@@ -39,6 +41,8 @@ Thumbs.db
 # Build, coverage and distribution artifacts
 build/
 dist/
+node_modules/
+*.tsbuildinfo
 *.egg-info/
 .coverage
 htmlcov/

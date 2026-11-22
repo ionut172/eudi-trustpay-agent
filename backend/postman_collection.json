@@ -1,7 +1,7 @@
 {
   "info": {
-    "_postman_id": "9b1d8350-fca0-4b2e-a50d-ing-eudi-001",
-    "name": "ING EUDI Wallet Conversational Payments API",
+    "_postman_id": "9b1d8350-fca0-4b2e-a50d-000000000001",
+    "name": "EUDI Conversational Payments API",
     "description": "Postman test collection covering Happy Path, APP Fraud Prevention (Subject Mismatch), and Bank Attestation Recovery flows.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
@@ -354,7 +354,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"session_id\": \"session-raw-1\",\n  \"pid\": {\n    \"sub\": \"urn:eu:pid:NL-12345678\",\n    \"given_name\": \"Alice\",\n    \"family_name\": \"Visser\",\n    \"birth_date\": \"1992-05-14\",\n    \"is_valid\": true,\n    \"issuer\": \"eu-pid-authority\"\n  },\n  \"iban_attestation\": {\n    \"sub\": \"urn:eu:pid:NL-12345678\",\n    \"iban\": \"NL91INGB0001234567\",\n    \"account_holder_name\": \"Alice Visser\",\n    \"bank_name\": \"ING Bank N.V.\",\n    \"is_valid\": true,\n    \"is_expired\": false\n  }\n}"
+              "raw": "{\n  \"session_id\": \"session-raw-1\",\n  \"pid\": {\n    \"sub\": \"urn:eu:pid:NL-12345678\",\n    \"given_name\": \"Alice\",\n    \"family_name\": \"Visser\",\n    \"birth_date\": \"1992-05-14\",\n    \"is_valid\": true,\n    \"issuer\": \"eu-pid-authority\"\n  },\n  \"iban_attestation\": {\n    \"sub\": \"urn:eu:pid:NL-12345678\",\n    \"iban\": \"NL91INGB0001234567\",\n    \"account_holder_name\": \"Alice Visser\",\n    \"bank_name\": \"Demo Issuer Bank\",\n    \"is_valid\": true,\n    \"is_expired\": false\n  }\n}"
             },
             "url": {
               "raw": "{{base_url}}/mock-wallet/session-raw-1/present",

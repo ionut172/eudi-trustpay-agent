@@ -1,1 +1,1 @@
-"""Unit and integration tests for ING EUDI Wallet Conversational Payments."""
+"""Unit and integration tests for the EUDI payments prototype."""

@@ -8,6 +8,7 @@ from app.config import Settings, get_settings
 from app.domain.models import (
     DCQLRequest,
     PayeeVerificationResult,
+    PaymentAuthorization,
     PaymentExecutionRequest,
     PaymentReceiptVC,
     WalletPresentationPayload,
@@ -40,7 +41,11 @@ class LiveEUDIVerifierAdapter(IEUDIVerifierPort):
             "currency": currency,
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(
+                url,
+                json=payload,
+                headers={"Idempotency-Key": payment_request.payment_id},
+            )
             resp.raise_for_status()
             data = resp.json()
             return DCQLRequest.model_validate(data)
@@ -99,15 +104,21 @@ class LiveCoreBankingAdapter(ICoreBankingPort):
     async def execute_instant_payment(
         self,
         payment_request: PaymentExecutionRequest,
-        verification: PayeeVerificationResult,
+        authorization: PaymentAuthorization,
+        verification: Optional[PayeeVerificationResult] = None,
     ) -> PaymentReceiptVC:
         url = f"{self.base_url}/api/v1/payments/instant-sepa"
         payload = {
             "payment": payment_request.model_dump(mode="json"),
-            "verification": verification.model_dump(mode="json"),
+            "authorization": authorization.model_dump(mode="json"),
+            "verification": verification.model_dump(mode="json") if verification else None,
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, json=payload)
+            resp = await client.post(
+                url,
+                json=payload,
+                headers={"Idempotency-Key": payment_request.payment_id},
+            )
             resp.raise_for_status()
             return PaymentReceiptVC.model_validate(resp.json())
 

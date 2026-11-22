@@ -1,6 +1,7 @@
 {
   "wallets": {
     "alice": {
+      "account_iban": "NL91INGB0001234567",
       "pid": {
         "sub": "urn:eu:pid:NL-12345678",
         "given_name": "Alice",
@@ -12,12 +13,13 @@
         "sub": "urn:eu:pid:NL-12345678",
         "iban": null,
         "account_holder_name": "Alice Visser",
-        "bank_name": "ING Bank N.V.",
+        "bank_name": "Demo Issuer Bank",
         "is_valid": true,
         "is_expired": false
       }
     },
     "george": {
+      "account_iban": "RO23INGB999900001231",
       "pid": {
         "sub": "urn:eu:pid:RO-12345678",
         "given_name": "George",
@@ -29,12 +31,13 @@
         "sub": "urn:eu:pid:RO-12345678",
         "iban": "RO23INGB999900001231",
         "account_holder_name": "George Visser",
-        "bank_name": "ING Bank N.V.",
+        "bank_name": "Demo Issuer Bank",
         "is_valid": true,
         "is_expired": false
       }
     },
     "ionut": {
+      "account_iban": "RO23INGB999900001231",
       "pid": {
         "sub": "urn:eu:pid:RO-76543210",
         "given_name": "Ionut",
@@ -46,7 +49,7 @@
         "sub": "urn:eu:pid:RO-76543210",
         "iban": "RO23INGB999900001231",
         "account_holder_name": "Ionut Gabriel",
-        "bank_name": "ING Bank N.V.",
+        "bank_name": "Demo Issuer Bank",
         "is_valid": true,
         "is_expired": false
       }
