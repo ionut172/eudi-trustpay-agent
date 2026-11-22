@@ -93,6 +93,7 @@ class PayeeVerificationResult(BaseModel):
     """Outcome of EUDI Wallet presentation evaluation."""
 
     verification_id: Optional[str] = None
+    request_id: Optional[str] = None
     status: VerificationStatus
     mode: Literal["mock", "live"] = "mock"
     session_id: str
@@ -112,6 +113,7 @@ class PaymentExecutionRequest(BaseModel):
     """Request payload for executing instant SEPA payment."""
 
     session_id: str
+    payment_id: str
     debtor_account: str = "NL91INGB0009876543"
     creditor_iban: str
     creditor_name: str
@@ -125,6 +127,7 @@ class PaymentAuthorization(BaseModel):
 
     decision: Literal["EUDI_VERIFIED", "TRUSTED_FAVORITE"]
     session_id: str
+    payment_id: str
     recipient_name: str
     recipient_iban: str
     amount: float = Field(gt=0)
@@ -142,6 +145,7 @@ class PaymentReceiptVC(BaseModel):
     credential_id: str
     transaction_id: str
     session_id: str
+    payment_id: str = ""
     amount: float
     currency: str = "EUR"
     debtor_iban: str

@@ -10,10 +10,7 @@ from google.genai import types
 from app.config import Settings, get_settings
 from app.telemetry import get_logger
 from app.domain.models import PaymentIntent
-from app.agents.eudi_agent import create_eudi_agent
-from app.agents.execution_agent import create_payment_execution_agent
 from app.agents.intent_agent import create_intent_agent
-from app.agents.risk_agent import create_risk_agent
 from app.tools.payment_tools import (
     check_payment_verification,
     _execute_payment_for_state,
@@ -47,21 +44,16 @@ class PaymentOrchestratorAgent:
 
         # Specialist definitions and prompts live in their own modules.
         intent_agent = create_intent_agent(self.settings)
-        risk_agent = create_risk_agent(self.settings)
-        trust_agent = create_eudi_agent(self.settings)
-        execution_agent = create_payment_execution_agent(self.settings)
-
         self.agent = Agent(
             name="payment_orchestrator",
-            description="Payment coordinator delegating intent, risk, EUDI trust, and execution stages",
+            description="Extracts payment intent; deterministic backend services perform all side effects",
             instruction=(
                 SYSTEM_INSTRUCTION
-                + " Delegate intent extraction to payment_intent_agent, risk decisions to payment_risk_agent, "
-                + "EUDI verification to eudi_trust_agent, and authorized transfer to payment_execution_agent. "
-                + "Never treat model output as authorization; backend tools enforce every decision."
+                + " Delegate only structured intent extraction to payment_intent_agent. "
+                + "Do not initiate verification or execute transfers; deterministic backend services do that after extraction."
             ),
             model=self.settings.MODEL_NAME,
-            sub_agents=[intent_agent, risk_agent, trust_agent, execution_agent],
+            sub_agents=[intent_agent],
         )
 
         # In-memory session service (can later swap to DatabaseSessionService / Firestore)

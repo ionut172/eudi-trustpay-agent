@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Fingerprint } from 'lucide-react'
-import type { PayeeVerificationResult, PaymentReceipt, PaymentSessionState } from '../types/payment'
-import { getReceipts, listMockWallets, presentMockWallet } from '../api/client'
+import type { PaymentReceipt, PaymentSessionState } from '../types/payment'
+import { getReceipts, listMockWallets } from '../api/client'
 import { WalletRequestPanel } from './WalletRequestPanel'
 import { WalletCredentialsPanel } from './WalletCredentialsPanel'
 
@@ -10,11 +10,11 @@ interface WalletProps {
   state: PaymentSessionState
   activeTab: 'request' | 'credentials'
   onTabChange: (tab: 'request' | 'credentials') => void
-  onVerified: (result: PayeeVerificationResult) => Promise<void>
+  onPresentWallet: (walletId: string) => Promise<void>
   busy: boolean
 }
 
-export function WalletSimulatorPane({ sessionId, state, activeTab, onTabChange, onVerified, busy }: WalletProps) {
+export function WalletSimulatorPane({ sessionId, state, activeTab, onTabChange, onPresentWallet, busy }: WalletProps) {
   const [wallets, setWallets] = useState<string[]>([])
   const [receipts, setReceipts] = useState<PaymentReceipt[]>([])
   const [error, setError] = useState('')
@@ -50,8 +50,7 @@ export function WalletSimulatorPane({ sessionId, state, activeTab, onTabChange, 
   const present = async (walletId: string) => {
     setError('')
     try {
-      const result = await presentMockWallet(walletId, sessionId)
-      await onVerified(result)
+      await onPresentWallet(walletId)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Wallet presentation failed.')
     }

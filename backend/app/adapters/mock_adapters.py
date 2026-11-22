@@ -65,21 +65,27 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
     def _sync_from_disk(self) -> None:
         """Loads state from shared disk file."""
         state = _read_persistent_state()
+        requests: dict[str, DCQLRequest] = {}
+        presentations: dict[str, WalletPresentationPayload] = {}
+        results: dict[str, PayeeVerificationResult] = {}
         for s_id, req_data in state.get("requests", {}).items():
             try:
-                self._requests[s_id] = DCQLRequest.model_validate(req_data)
+                requests[s_id] = DCQLRequest.model_validate(req_data)
             except Exception:
                 pass
         for s_id, pres_data in state.get("presentations", {}).items():
             try:
-                self._presentations[s_id] = WalletPresentationPayload.model_validate(pres_data)
+                presentations[s_id] = WalletPresentationPayload.model_validate(pres_data)
             except Exception:
                 pass
         for s_id, res_data in state.get("results", {}).items():
             try:
-                self._results[s_id] = PayeeVerificationResult.model_validate(res_data)
+                results[s_id] = PayeeVerificationResult.model_validate(res_data)
             except Exception:
                 pass
+        self._requests = requests
+        self._presentations = presentations
+        self._results = results
 
     def _persist_to_disk(self) -> None:
         """Saves current state to shared disk file."""
@@ -167,7 +173,6 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
         payload: WalletPresentationPayload,
     ) -> PayeeVerificationResult:
         self._sync_from_disk()
-        self._presentations[session_id] = payload
         req = self._requests.get(session_id)
 
         target_iban = req.target_iban if req else (payload.iban_attestation.iban if payload.iban_attestation else "")
@@ -177,6 +182,17 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
             else (payload.pid.full_name if payload.pid else "")
         )
 
+        if req is None or payload.session_id != session_id or payload.nonce != req.nonce:
+            return PayeeVerificationResult(
+                status=VerificationStatus.TRUST_ERROR,
+                session_id=session_id,
+                request_id=req.request_id if req else None,
+                verification_id=f"ver_{uuid.uuid4().hex}",
+                mode="mock",
+                reason="Presentation is not bound to the active wallet request.",
+            )
+
+        self._presentations[session_id] = payload
         result = evaluate_wallet_presentation(
             payload=payload,
             expected_iban=target_iban,
@@ -190,7 +206,8 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
             VerificationStatus.IBAN_MISMATCH,
             VerificationStatus.TRUST_ERROR,
         }
-        result.verification_id = f"ver_test_{session_id}"
+        result.verification_id = f"ver_{uuid.uuid4().hex}"
+        result.request_id = req.request_id
         result.mode = "mock"
         result.checks = WalletVerificationChecks(
             presentation_received=True,
@@ -268,6 +285,7 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
             session_id=session_id,
             pid=pid,
             iban_attestation=recovered_attestation,
+            nonce=req.nonce,
         )
 
         self._presentations[session_id] = updated_payload
@@ -277,7 +295,8 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
             expected_payee_name=expected_name,
             recovery_issuer_url=self.recovery_issuer_url,
         )
-        result.verification_id = f"ver_test_{session_id}"
+        result.verification_id = f"ver_{uuid.uuid4().hex}"
+        result.request_id = req.request_id
         result.mode = "mock"
         if result.status == VerificationStatus.VERIFIED:
             result.verified_at = datetime.datetime.now(datetime.timezone.utc)
@@ -321,6 +340,7 @@ class MockEUDIVerifierAdapter(IEUDIVerifierPort):
                 "Supported: valid, mismatch, iban_mismatch, missing_iban"
             )
 
+        payload.nonce = req.nonce
         return await self.submit_wallet_presentation(session_id=session_id, payload=payload)
 
 
@@ -333,11 +353,13 @@ class MockCoreBankingAdapter(ICoreBankingPort):
 
     def _sync_from_disk(self) -> None:
         state = _read_persistent_state()
+        receipts: dict[str, list[PaymentReceiptVC]] = {}
         for s_id, receipts_data in state.get("receipts", {}).items():
             try:
-                self._receipts[s_id] = [PaymentReceiptVC.model_validate(r) for r in receipts_data]
+                receipts[s_id] = [PaymentReceiptVC.model_validate(r) for r in receipts_data]
             except Exception:
                 pass
+        self._receipts = receipts
 
     def _persist_to_disk(self) -> None:
         state = _read_persistent_state()
@@ -358,6 +380,7 @@ class MockCoreBankingAdapter(ICoreBankingPort):
 
         payment_matches_authorization = (
             authorization.session_id == session_id
+            and authorization.payment_id == payment_request.payment_id
             and authorization.recipient_iban.replace(" ", "").upper()
             == payment_request.creditor_iban.replace(" ", "").upper()
             and authorization.recipient_name.strip().casefold()
@@ -367,6 +390,9 @@ class MockCoreBankingAdapter(ICoreBankingPort):
         )
         if not payment_matches_authorization:
             raise ValueError("Core banking refused execution: authorization does not match payment details.")
+
+        if not payment_request.payment_id or authorization.payment_id != payment_request.payment_id:
+            raise ValueError("Core banking refused execution: payment id is missing or mismatched.")
 
         if authorization.decision == "EUDI_VERIFIED":
             if (
@@ -388,6 +414,24 @@ class MockCoreBankingAdapter(ICoreBankingPort):
             ):
                 raise ValueError("Core banking refused execution: trusted-favorite authorization is invalid.")
 
+        for existing_receipt in self._receipts.get(session_id, []):
+            if existing_receipt.payment_id == payment_request.payment_id:
+                same_payment = (
+                    existing_receipt.amount == payment_request.amount
+                    and existing_receipt.currency == payment_request.currency
+                    and existing_receipt.creditor_iban.replace(" ", "").upper()
+                    == payment_request.creditor_iban.replace(" ", "").upper()
+                    and existing_receipt.creditor_name.strip().casefold()
+                    == payment_request.creditor_name.strip().casefold()
+                    and existing_receipt.debtor_iban.replace(" ", "").upper()
+                    == payment_request.debtor_account.replace(" ", "").upper()
+                )
+                if not same_payment:
+                    raise ValueError(
+                        "Core banking refused execution: payment id was reused with different details."
+                    )
+                return existing_receipt
+
         transaction_id = f"TX-SEPA-INSTANT-{uuid.uuid4().hex[:12].upper()}"
         credential_id = f"urn:uuid:{uuid.uuid4()}"
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -397,6 +441,7 @@ class MockCoreBankingAdapter(ICoreBankingPort):
             credential_id=credential_id,
             transaction_id=transaction_id,
             session_id=session_id,
+            payment_id=payment_request.payment_id,
             amount=payment_request.amount,
             currency=payment_request.currency,
             debtor_iban=payment_request.debtor_account,

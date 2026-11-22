@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   getHealth,
+  presentMockWallet,
   recoverIban,
   sendChat,
   checkPaymentVerification,
   executePayment,
 } from '../api/client'
-import type { ChatMessage, PayeeVerificationResult, PaymentSessionState } from '../types/payment'
+import type { ChatMessage, PaymentSessionState } from '../types/payment'
 
 const createSessionId = () => `demo_${crypto.randomUUID().replaceAll('-', '').slice(0, 10)}`
 
@@ -99,12 +100,22 @@ export function usePaymentSession() {
     }
   }, [addMessage, sessionId])
 
-  const refreshAfterWallet = useCallback(async (_result: PayeeVerificationResult) => {
+  const presentWallet = useCallback(async (walletId: string) => {
     const requestGeneration = generation.current
-    const response = await checkPaymentVerification(sessionId)
-    if (requestGeneration !== generation.current) return
-    setState(response.state)
-    addMessage('assistant', response.reply)
+    const requestSessionId = sessionId
+    setLoading(true)
+    try {
+      await presentMockWallet(walletId, requestSessionId)
+      if (requestGeneration !== generation.current) return
+      const response = await checkPaymentVerification(requestSessionId)
+      if (requestGeneration !== generation.current) return
+      setState(response.state)
+      addMessage('assistant', response.reply)
+    } catch (error) {
+      if (requestGeneration === generation.current) throw error
+    } finally {
+      if (requestGeneration === generation.current) setLoading(false)
+    }
   }, [addMessage, sessionId])
 
   return {
@@ -117,7 +128,7 @@ export function usePaymentSession() {
     checkVerification,
     sendPayment,
     recover,
-    refreshAfterWallet,
+    presentWallet,
     reset,
   }
 }

@@ -62,6 +62,13 @@ def test_specialist_agents_have_separate_roles_and_instructions():
     assert agents[0].tools == []
 
 
+def test_chat_runner_attaches_only_pure_intent_extractor():
+    settings = Settings(GEMINI_API_KEY="offline-test-key", MODEL_NAME="gemini-2.5-flash")
+    orchestrator = PaymentOrchestratorAgent(settings)
+
+    assert [agent.name for agent in orchestrator.agent.sub_agents] == ["payment_intent_agent"]
+
+
 @pytest.mark.asyncio
 async def test_chat_hands_structured_intent_to_payment_flow(monkeypatch):
     settings = Settings(GEMINI_API_KEY="offline-test-key", MODEL_NAME="gemini-2.5-flash")

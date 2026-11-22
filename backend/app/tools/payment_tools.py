@@ -1,6 +1,7 @@
 """Google ADK tools and deterministic payment authorization services."""
 
 import datetime
+import uuid
 from typing import Any, MutableMapping, Optional
 from google.adk.tools import ToolContext
 from app.adapters.mock_wallet_api import MockEUWalletApi
@@ -123,7 +124,13 @@ async def initiate_payment_intent(
         settings.FAVORITE_FAST_PATH_MAX_AMOUNT,
     )
     state["session_id"] = session_id
+    payment_id = uuid.uuid4().hex
+    state.pop("payment_authorization", None)
+    state.pop("last_receipt_id", None)
+    state.pop("transaction_id", None)
+    state["verified_payee"] = None
     state["pending_payment"] = {
+        "payment_id": payment_id,
         "amount": intent.amount,
         "creditor_iban": iban,
         "creditor_name": name,
@@ -134,6 +141,7 @@ async def initiate_payment_intent(
         authorization = PaymentAuthorization(
             decision="TRUSTED_FAVORITE",
             session_id=session_id,
+            payment_id=payment_id,
             recipient_name=name,
             recipient_iban=iban,
             amount=intent.amount,
@@ -233,6 +241,21 @@ async def check_payee_eudi_verification(tool_context: ToolContext) -> str:
             "Verification is still PENDING. The payee has not yet presented their EUDI Wallet credentials. "
             "Please ask them to scan the verification QR code or approve the OID4VP request."
         )
+
+    request = await verifier.get_dcql_request(session_id)
+    if (
+        request is None
+        or result.session_id != session_id
+        or result.request_id != request.request_id
+        or request.target_iban.replace(" ", "").upper()
+        != pending_payment.get("creditor_iban", "").replace(" ", "").upper()
+        or request.expected_payee_name.casefold()
+        != pending_payment.get("creditor_name", "").casefold()
+        or request.amount != float(pending_payment.get("amount", 0))
+        or request.currency != pending_payment.get("currency", "EUR")
+    ):
+        tool_context.state["verification_status"] = VerificationStatus.PENDING.value
+        return "Verification is not bound to the active payment request. No payment was executed."
 
     # Synchronize ADK session state with domain validation result
     tool_context.state["verification_status"] = result.status.value
@@ -343,12 +366,28 @@ async def check_payment_verification(
     pending = state.get("pending_payment")
     if not pending:
         return "No pending payment found in session. Please initiate a payment first."
+    if state.get("verification_status") == VerificationStatus.COMPLETED.value:
+        return await _execute_payment_for_state(session_id, state, settings)
 
     verifier, _ = get_adapters(settings)
     result = await verifier.get_verification_result(session_id)
     if result is None:
         state["verification_status"] = VerificationStatus.PENDING.value
         return "Verification is still PENDING. The payee has not yet presented EUDI credentials."
+
+    request = await verifier.get_dcql_request(session_id)
+    if (
+        request is None
+        or result.session_id != session_id
+        or result.request_id != request.request_id
+        or request.target_iban.replace(" ", "").upper()
+        != pending.get("creditor_iban", "").replace(" ", "").upper()
+        or request.expected_payee_name.casefold() != pending.get("creditor_name", "").casefold()
+        or request.amount != float(pending.get("amount", 0))
+        or request.currency != pending.get("currency", "EUR")
+    ):
+        state["verification_status"] = VerificationStatus.PENDING.value
+        return "Verification is not bound to the active payment request. No payment was executed."
 
     state["verification_status"] = result.status.value
     if result.status == VerificationStatus.VERIFIED:
@@ -397,6 +436,12 @@ async def _execute_payment_for_state(
     settings = settings or get_settings()
     current_status = state.get("verification_status")
     pending = state.get("pending_payment")
+    if current_status == VerificationStatus.COMPLETED.value:
+        transaction_id = state.get("transaction_id")
+        return (
+            f"Payment was already completed. Transaction ID: `{transaction_id}`. "
+            "No additional transfer was created."
+        )
     if current_status not in (VerificationStatus.VERIFIED.value, VerificationStatus.FAST_PATH_APPROVED.value):
         logger.log_event(
             severity="ERROR",
@@ -416,6 +461,9 @@ async def _execute_payment_for_state(
 
     if not pending:
         return "EXECUTION ERROR: No pending payment details found in session."
+    payment_id = pending.get("payment_id")
+    if not isinstance(payment_id, str) or not payment_id:
+        return "EXECUTION BLOCKED: Payment identifier is missing."
 
     verification_result: Optional[PayeeVerificationResult] = None
     if current_status == VerificationStatus.FAST_PATH_APPROVED.value:
@@ -435,6 +483,7 @@ async def _execute_payment_for_state(
             risk.route != "FAST_PATH_APPROVED"
             or stored.get("decision") != "TRUSTED_FAVORITE"
             or stored.get("session_id") != session_id
+            or stored.get("payment_id") != payment_id
             or stored.get("recipient_iban") != risk.recipient_iban
             or stored.get("recipient_name", "").casefold() != (pending.get("creditor_name") or "").casefold()
             or stored.get("favorite_name", "").casefold() != (pending.get("creditor_name") or "").casefold()
@@ -455,6 +504,7 @@ async def _execute_payment_for_state(
         if (
             dcql_request is None
             or dcql_request.session_id != session_id
+            or dcql_request.currency != pending.get("currency", "EUR")
             or dcql_request.target_iban.replace(" ", "").upper()
             != pending["creditor_iban"].replace(" ", "").upper()
             or dcql_request.amount != float(pending["amount"])
@@ -473,6 +523,8 @@ async def _execute_payment_for_state(
             return "EXECUTION BLOCKED: Verification result is stale."
         if not verification_result.verification_id:
             return "EXECUTION BLOCKED: Verification identifier is missing."
+        if verification_result.request_id != dcql_request.request_id:
+            return "EXECUTION BLOCKED: Verification result is not bound to the active request."
         if (
             verification_result.verified_iban or ""
         ).replace(" ", "").upper() != pending["creditor_iban"].replace(" ", "").upper():
@@ -484,6 +536,7 @@ async def _execute_payment_for_state(
         authorization = PaymentAuthorization(
             decision="EUDI_VERIFIED",
             session_id=session_id,
+            payment_id=payment_id,
             recipient_name=pending["creditor_name"],
             recipient_iban=pending["creditor_iban"],
             amount=float(pending["amount"]),
@@ -494,6 +547,7 @@ async def _execute_payment_for_state(
 
     payment_request = PaymentExecutionRequest(
         session_id=session_id,
+        payment_id=payment_id,
         debtor_account="NL91INGB0009876543",
         creditor_iban=pending["creditor_iban"],
         creditor_name=pending["creditor_name"],
@@ -558,6 +612,7 @@ async def evaluate_payment_risk(
     session_id = _get_session_id(tool_context)
     tool_context.state["session_id"] = session_id
     tool_context.state["pending_payment"] = {
+        "payment_id": uuid.uuid4().hex,
         "amount": amount,
         "creditor_iban": risk.recipient_iban,
         "creditor_name": recipient_name,
@@ -568,6 +623,7 @@ async def evaluate_payment_risk(
         tool_context.state["payment_authorization"] = PaymentAuthorization(
             decision="TRUSTED_FAVORITE",
             session_id=session_id,
+            payment_id=tool_context.state["pending_payment"]["payment_id"],
             recipient_name=recipient_name or "",
             recipient_iban=risk.recipient_iban or "",
             amount=amount or 0,

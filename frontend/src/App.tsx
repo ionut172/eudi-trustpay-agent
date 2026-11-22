@@ -50,7 +50,7 @@ export default function App() {
             state={payment.state}
             activeTab={walletTab}
             onTabChange={setWalletTab}
-            onVerified={payment.refreshAfterWallet}
+            onPresentWallet={payment.presentWallet}
             busy={payment.loading}
           />
         </section>

@@ -25,7 +25,7 @@ The phone-shaped UI uses generic banking branding and is not affiliated with or 
 | --- | --- | --- |
 | Mobile banking prototype | `frontend/` | Phone-shaped chat, sample recipients, payment status and wallet simulator UI |
 | FastAPI API | `backend/app/main.py` | Chat, payment intent, verification, execution, and mock-wallet routes |
-| ADK coordinator and specialists | `backend/app/agents/` | Intent extraction, risk, EUDI status, and execution coordination |
+| ADK intent extractor | `backend/app/agents/` | Converts chat into typed intent; it cannot initiate verification or execute payments |
 | Deterministic payment guardrails | `backend/app/tools/payment_tools.py` | Recipient resolution, pending state, authorization checks and payment-adapter call |
 | Domain validation | `backend/app/domain/` | Typed models and synthetic credential checks |
 | Adapter boundary | `backend/app/adapters/` | Mock implementations and illustrative HTTP integration stubs |

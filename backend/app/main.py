@@ -226,11 +226,19 @@ async def list_mock_wallets() -> dict[str, Any]:
 async def present_mock_wallet(wallet_id: str, session_id: str) -> PayeeVerificationResult:
     """Fetches credentials from the JSON fixture and submits them to the verifier."""
     wallet_api = MockEUWalletApi()
+    verifier, _ = get_adapters(settings)
+    request = await verifier.get_dcql_request(session_id)
+    if request is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No active wallet request exists for this session.",
+        )
     payload = await wallet_api.fetch_wallet_presentation(
         session_id=session_id,
         wallet_id=wallet_id,
+        target_iban=request.target_iban,
     )
-    verifier, _ = get_adapters(settings)
+    payload.nonce = request.nonce
     result = await verifier.submit_wallet_presentation(session_id=session_id, payload=payload)
     await _sync_adk_session_verification(session_id, result)
     return result

@@ -49,8 +49,8 @@
   <text x="422" y="287" class="body">Chat · payment intent · status · execution</text>
   <rect x="400" y="332" width="395" height="87" rx="12" class="box"/>
   <text x="422" y="359" class="heading">Google ADK coordinator</text>
-  <text x="422" y="382" class="body">Intent specialist · risk specialist · EUDI specialist</text>
-  <text x="422" y="402" class="small">Model extracts/coordinates; it does not authorize payment</text>
+  <text x="422" y="382" class="body">Pure typed-intent extraction only</text>
+  <text x="422" y="402" class="small">Model extracts intent; backend alone authorizes payment</text>
   <rect x="400" y="443" width="395" height="100" rx="12" class="guard"/>
   <text x="422" y="471" class="heading">Deterministic backend guardrails</text>
   <text x="422" y="495" class="body">Recipient resolution · pending-payment binding</text>

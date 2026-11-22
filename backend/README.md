@@ -21,7 +21,7 @@ Run the backend tests with `uv run pytest`. They use mock components and make no
 ## Structure
 
 - `app/main.py` — FastAPI routes for chat, payment intents, verification, execution, and development-only mock-wallet scenarios.
-- `app/agents/` — ADK coordinator and intent, risk, EUDI, and execution specialist agents.
+- `app/agents/` — ADK intent extractor and isolated specialist definitions; the chat runner invokes only the pure intent extractor. Backend code handles risk, verification and execution after extraction.
 - `app/tools/payment_tools.py` — deterministic recipient resolution, authorization checks, verifier polling, and adapter execution.
 - `app/domain/` — typed payment and credential models plus local mock-presentation validation.
 - `app/adapters/base.py` — verifier/payment adapter interfaces.
