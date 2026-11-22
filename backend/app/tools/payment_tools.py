@@ -78,8 +78,14 @@ async def initiate_payee_eudi_verification(
                     "bank": mock_result.issuer_bank,
                 }
                 wallet_mode = " | Presentare EUDI mock verificată automat"
+
+                if settings.AUTO_EXECUTE_VERIFIED_PAYMENTS:
+                    execution_reply = await execute_verified_instant_payment(tool_context=tool_context)  # type: ignore[arg-type]
+                else:
+                    execution_reply = ""
             else:
                 wallet_mode = f" | Mock wallet verdict: {mock_result.status.value}"
+                execution_reply = ""
         except Exception:
             wallet_mode = " | Mock wallet presentation unavailable"
     else:
@@ -96,12 +102,10 @@ async def initiate_payee_eudi_verification(
         f"- **Session ID:** `{session_id}`\n"
         f"- **Verdict EUDI:** {tool_context.state.get('verification_status')}\n"
         f"- **OID4VP Deep Link:** {dcql_req.qr_code_uri}{wallet_mode}\n\n"
-        "Verificarea este realizată automat pentru mockul local. În LIVE, portofelul EUDI trebuie să prezinte "
-        "credentialele înainte ca verdictul să fie fetch-uit și validat.\n"
-        "Beneficiarul trebuie să prezinte portofelul EUDI. Apoi spuneți „Verifică statusul acum”. "
-        "Nicio plată nu poate fi executată până la verificarea criptografică externă.\n"
-        f"Simulator wallet: `POST http://localhost:8080/mock-wallet/{session_id}/preset/valid`\n\n"
-        "EUDI Wallet verification challenge initiated."
+        "Verificarea este realizată automat pentru mockul local: walletul este fetch-uit, prezentarea este "
+        "validată și execuția continuă doar pentru verdictul VERIFIED. Apele manuale către `/preset/*` nu sunt necesare.\n\n"
+        + (execution_reply if 'execution_reply' in locals() else "")
+        + "\nEUDI Wallet verification challenge initiated."
     )
 
 

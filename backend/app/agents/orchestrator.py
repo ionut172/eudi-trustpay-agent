@@ -189,11 +189,11 @@ class PaymentOrchestratorAgent:
 
         # Extract the name exactly as written after 'to' or 'către'.
         payee_name = "Unknown Payee"
-        to_match = re.search(r"\b(?:to|către)\s+", message, re.IGNORECASE)
-        if to_match:
-            remainder = message[to_match.end():].strip()
+        name_marker = re.search(r"\b(?:to|către|catre|pentru)\s+", message, re.IGNORECASE)
+        if name_marker:
+            remainder = message[name_marker.end():].strip()
             payee_name = re.split(
-                r"\s+(?:with|at|for|la|pentru|iban)\b|\s+(?:NL|RO|DE|FR)[A-Z0-9]+",
+                r"\s+(?:la|at|with|for|iban)\b",
                 remainder,
                 maxsplit=1,
                 flags=re.IGNORECASE,
